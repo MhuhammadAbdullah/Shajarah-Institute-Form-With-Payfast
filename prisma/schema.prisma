@@ -1,0 +1,113 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Gender {
+  MALE
+  FEMALE
+  OTHER
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  FAILED
+  CANCELLED
+}
+
+enum PaymentGatewayStatus {
+  INITIATED
+  SUCCESS
+  FAILED
+}
+
+enum AdminRole {
+  SUPER_ADMIN
+  ADMIN
+}
+
+model Registration {
+  id       String @id @default(cuid())
+  basketId String @unique
+
+  // Student information
+  studentName String
+  fatherName  String?
+  email       String
+  phone       String
+  cnic        String?
+  gender      Gender
+  dateOfBirth DateTime?
+
+  // Program information
+  program String
+  batch   String
+  campus  String
+  session String
+  fee     Decimal @db.Decimal(10, 2)
+
+  // Address
+  country String
+  city    String
+  address String
+
+  agreementAccepted Boolean @default(false)
+
+  // Payment
+  paymentStatus PaymentStatus @default(PENDING)
+  paymentMethod String?
+  transactionId String?
+  accessToken   String?
+
+  payments Payment[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([email])
+  @@index([paymentStatus])
+  @@index([createdAt])
+}
+
+model Payment {
+  id             String       @id @default(cuid())
+  registrationId String
+  registration   Registration @relation(fields: [registrationId], references: [id], onDelete: Cascade)
+
+  basketId        String
+  transactionId   String?
+  amount          Decimal              @db.Decimal(10, 2)
+  merchantAmount  Decimal?             @db.Decimal(10, 2)
+  errCode         String?
+  errMessage      String?
+  validationHash  String?
+  paymentName     String?
+  gatewayResponse Json?
+  status          PaymentGatewayStatus @default(INITIATED)
+
+  createdAt DateTime @default(now())
+
+  @@index([basketId])
+  @@index([registrationId])
+}
+
+model BasketSequence {
+  id    String @id @default(cuid())
+  year  Int    @unique
+  value Int    @default(0)
+}
+
+model AdminUser {
+  id           String    @id @default(cuid())
+  name         String
+  email        String    @unique
+  passwordHash String
+  role         AdminRole @default(ADMIN)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+}
