@@ -39,6 +39,10 @@ export async function getAccessToken(params: { basketId: string; amount: number 
     SECURED_KEY: env.PAYFAST_SECURED_KEY,
     TXNAMT: params.amount.toFixed(2),
     BASKET_ID: params.basketId,
+    CURRENCY_CODE: PAYFAST_CURRENCY_CODE,
+    PROCCODE: PAYFAST_PROC_CODE,
+    VERSION: PAYFAST_VERSION,
+    TXNDESC: PAYFAST_TXN_DESC,
   });
 
   const response = await fetch(getTokenEndpoint(), {

@@ -53,7 +53,8 @@ export default async function AdminRegistrationsPage({ searchParams }: PageProps
             placeholder="Search by name, email, phone, basket ID…"
             className="max-w-xs"
           />
-          <Select name="status" defaultValue={status ?? ""} placeholder="All statuses" className="max-w-[180px]">
+          {/* <Select name="status" defaultValue={status ?? ""} placeholder="All statuses" className="max-w-[180px]"> */}
+          <Select name="status" defaultValue={status ?? ""} placeholder="All statuses" className="max-w-45">
             {STATUS_OPTIONS.map((option) => (
               <option key={option} value={option}>
                 {option.charAt(0) + option.slice(1).toLowerCase()}

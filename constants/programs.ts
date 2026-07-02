@@ -14,13 +14,20 @@ export const PROGRAMS = [
  * a tampered request body can't pay less than the real price.
  */
 export const PROGRAM_FEES: Record<(typeof PROGRAMS)[number], number> = {
-  "Hifz-ul-Quran": 5000,
-  "Aalim Course": 8000,
-  "Aalimah Course": 8000,
-  "Qaida & Nazra": 3000,
-  "Tajweed Course": 4000,
-  "Arabic Language Course": 6000,
-  "Islamic Studies Diploma": 10000,
+  "Hifz-ul-Quran": 1,
+  "Aalim Course": 1,
+  "Aalimah Course": 1,
+  "Qaida & Nazra": 1,
+  "Tajweed Course": 1,
+  "Arabic Language Course": 1,
+  "Islamic Studies Diploma": 1,
+  // "Hifz-ul-Quran": 5000,
+  // "Aalim Course": 8000,
+  // "Aalimah Course": 8000,
+  // "Qaida & Nazra": 3000,
+  // "Tajweed Course": 4000,
+  // "Arabic Language Course": 6000,
+  // "Islamic Studies Diploma": 10000,
 };
 
 export const CAMPUSES = ["Karachi Campus", "Lahore Campus", "Islamabad Campus", "Online Campus"] as const;
