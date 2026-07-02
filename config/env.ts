@@ -28,6 +28,41 @@ const envSchema = z.object({
   ADMIN_SESSION_SECRET: z.string().min(16, "ADMIN_SESSION_SECRET must be at least 16 characters"),
 });
 
+const PAYFAST_CALLBACK_URL_KEYS = [
+  "PAYFAST_RETURN_URL",
+  "PAYFAST_CANCEL_URL",
+  "PAYFAST_IPN_URL",
+  "NEXT_PUBLIC_BASE_URL",
+] as const;
+
+/**
+ * PayFast's servers must be able to reach these URLs over the public internet.
+ * A localhost/http URL here silently breaks the IPN callback in production
+ * (fetch just fails/times out server-side, no user-facing error) — refuse to
+ * boot instead of failing invisibly.
+ */
+const finalSchema = envSchema.superRefine((env, ctx) => {
+  if (env.PAYFAST_ENV !== "production") return;
+
+  for (const key of PAYFAST_CALLBACK_URL_KEYS) {
+    const url = new URL(env[key]);
+    if (url.hostname === "localhost" || url.hostname === "127.0.0.1") {
+      ctx.addIssue({
+        code: "custom",
+        path: [key],
+        message: `${key} is "${env[key]}" but PAYFAST_ENV is "production" — PayFast cannot call back a localhost URL`,
+      });
+    }
+    if (url.protocol !== "https:") {
+      ctx.addIssue({
+        code: "custom",
+        path: [key],
+        message: `${key} is "${env[key]}" but PAYFAST_ENV is "production" — must be HTTPS`,
+      });
+    }
+  }
+});
+
 export type Env = z.infer<typeof envSchema>;
 
 let cachedEnv: Env | undefined;
@@ -35,7 +70,7 @@ let cachedEnv: Env | undefined;
 export function getEnv(): Env {
   if (cachedEnv) return cachedEnv;
 
-  const parsed = envSchema.safeParse(process.env);
+  const parsed = finalSchema.safeParse(process.env);
   if (!parsed.success) {
     const issues = parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("\n");
     throw new Error(`Invalid environment configuration:\n${issues}`);

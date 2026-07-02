@@ -1,7 +1,7 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getEnv } from "@/config/env";
-import { isValidationHashValid } from "@/lib/payfast/hash";
+import { computeValidationHash, isValidationHashValid } from "@/lib/payfast/hash";
 import { PAYFAST_ERR_CODE_SUCCESS } from "@/constants/payfast";
 import type { NormalizedIpnPayload } from "@/types/payfast";
 import { sendPaymentConfirmationEmail } from "@/services/email.service";
@@ -40,6 +40,15 @@ export async function processPayFastIpn(payload: NormalizedIpnPayload): Promise<
   });
 
   if (!hashValid) {
+    const expectedHash = computeValidationHash({
+      basketId: payload.basketId,
+      secureKey: env.PAYFAST_SECURED_KEY,
+      merchantId: env.PAYFAST_MERCHANT_ID,
+      errCode: payload.errCode,
+    });
+    console.error(
+      `[PayFast IPN] Validation hash mismatch basketId=${payload.basketId} errCode=${payload.errCode} expectedHash=${expectedHash} receivedHash=${payload.validationHash}`,
+    );
     await prisma.payment.create({
       data: {
         registrationId: registration.id,

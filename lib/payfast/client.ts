@@ -33,6 +33,7 @@ function getCheckoutEndpoint(): string {
  */
 export async function getAccessToken(params: { basketId: string; amount: number }): Promise<string> {
   const env = getEnv();
+  const endpoint = getTokenEndpoint();
 
   const body = new URLSearchParams({
     MERCHANT_ID: env.PAYFAST_MERCHANT_ID,
@@ -45,7 +46,11 @@ export async function getAccessToken(params: { basketId: string; amount: number 
     TXNDESC: PAYFAST_TXN_DESC,
   });
 
-  const response = await fetch(getTokenEndpoint(), {
+  console.log(
+    `[PayFast] Requesting access token env=${env.PAYFAST_ENV} endpoint=${endpoint} basketId=${params.basketId} amount=${params.amount} proccode=${PAYFAST_PROC_CODE} merchantId=${env.PAYFAST_MERCHANT_ID}`,
+  );
+
+  const response = await fetch(endpoint, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: body.toString(),
@@ -53,6 +58,10 @@ export async function getAccessToken(params: { basketId: string; amount: number 
   });
 
   if (!response.ok) {
+    const rawBody = await response.text();
+    console.error(
+      `[PayFast] Token request failed basketId=${params.basketId} status=${response.status} body=${rawBody}`,
+    );
     throw new PayFastError(`PayFast token request failed with status ${response.status}`);
   }
 
@@ -60,6 +69,9 @@ export async function getAccessToken(params: { basketId: string; amount: number 
   const token = data.ACCESS_TOKEN ?? data.access_token;
 
   if (!token) {
+    console.error(
+      `[PayFast] No access token in response basketId=${params.basketId} errCode=${data.errCode ?? "?"} errMsg=${data.errMsg ?? "?"} raw=${JSON.stringify(data)}`,
+    );
     throw new PayFastError(
       `PayFast did not return an access token: ${data.errMsg ?? JSON.stringify(data)}`,
     );

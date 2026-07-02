@@ -17,12 +17,17 @@ export async function POST(request: Request) {
 
   const payload = normalizeIpnPayload(rawFields);
 
+  console.log(
+    `[PayFast IPN] Received basketId=${payload.basketId || "?"} errCode=${payload.errCode || "?"} paymentName=${payload.paymentName || "?"} transactionId=${payload.transactionId || "?"}`,
+  );
+
   if (!payload.basketId || !payload.validationHash) {
     return new NextResponse("Missing required IPN fields", { status: 400 });
   }
 
   try {
     const result = await processPayFastIpn(payload);
+    console.log(`[PayFast IPN] Processed basketId=${payload.basketId} outcome=${result.outcome}`);
 
     switch (result.outcome) {
       case "success":
