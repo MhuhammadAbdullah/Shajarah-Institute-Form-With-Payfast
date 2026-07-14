@@ -96,6 +96,16 @@ npm run dev
   Basket ID are rejected and never mark a registration as paid. See `lib/payfast/hash.ts` and
   `services/payment.service.ts`.
 
+## Google Sheets Logging
+
+- On every successful payment (verified IPN callback, same trust boundary as the confirmation email), the
+  registration + payment details are appended as a row to a Google Sheet via a service account.
+- Configure `GOOGLE_SHEETS_CLIENT_EMAIL`, `GOOGLE_SHEETS_PRIVATE_KEY`, `GOOGLE_SHEETS_SPREADSHEET_ID`, and
+  `GOOGLE_SHEETS_SHEET_NAME` in `.env`. See `.env.example` for setup notes.
+- Share the target spreadsheet with the service account's email (Editor access) — the API call fails otherwise.
+- A sheet-write failure is logged but never blocks the IPN response or marks a payment as unpaid; see
+  `services/sheets.service.ts` and its call site in `services/payment.service.ts`.
+
 ## Admin Dashboard
 
 - Sign in at `/admin/login` with the account created by `npm run db:seed`.

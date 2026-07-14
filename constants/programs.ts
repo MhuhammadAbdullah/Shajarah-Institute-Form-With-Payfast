@@ -14,13 +14,13 @@ export const PROGRAMS = [
  * a tampered request body can't pay less than the real price.
  */
 export const PROGRAM_FEES: Record<(typeof PROGRAMS)[number], number> = {
-  "Hifz-ul-Quran": 1,
-  "Aalim Course": 1,
-  "Aalimah Course": 1,
-  "Qaida & Nazra": 1,
-  "Tajweed Course": 1,
-  "Arabic Language Course": 1,
-  "Islamic Studies Diploma": 1,
+  "Hifz-ul-Quran": 5,
+  "Aalim Course": 5,
+  "Aalimah Course": 5,
+  "Qaida & Nazra": 5,
+  "Tajweed Course": 5,
+  "Arabic Language Course": 5,
+  "Islamic Studies Diploma": 5,
   // "Hifz-ul-Quran": 5000,
   // "Aalim Course": 8000,
   // "Aalimah Course": 8000,

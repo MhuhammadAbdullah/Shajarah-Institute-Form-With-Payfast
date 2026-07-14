@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 import Link from "next/link";
 import { getRegistrationDetail } from "@/services/admin.service";
 import { Card, CardSection } from "@/components/ui/Card";
+import { MarkPaidForm } from "@/components/admin/MarkPaidForm";
 
 export const dynamic = "force-dynamic";
 
@@ -75,6 +76,13 @@ export default async function RegistrationDetailPage({ params }: PageProps) {
           <Detail label="Payment Method" value={registration.paymentMethod ?? ""} />
           <Detail label="Transaction ID" value={registration.transactionId ?? ""} />
         </CardSection>
+        {registration.paymentStatus !== "PAID" && (
+          <CardSection title="Manual Override">
+            <div className="sm:col-span-2">
+              <MarkPaidForm registrationId={registration.id} />
+            </div>
+          </CardSection>
+        )}
       </Card>
 
       <Card className="overflow-x-auto p-0">

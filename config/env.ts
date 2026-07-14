@@ -26,6 +26,11 @@ const envSchema = z.object({
   SMTP_FROM_NAME: z.string().default("Shajarah Institute"),
 
   ADMIN_SESSION_SECRET: z.string().min(16, "ADMIN_SESSION_SECRET must be at least 16 characters"),
+
+  GOOGLE_SHEETS_CLIENT_EMAIL: z.string().email("GOOGLE_SHEETS_CLIENT_EMAIL must be a valid email"),
+  GOOGLE_SHEETS_PRIVATE_KEY: z.string().min(1, "GOOGLE_SHEETS_PRIVATE_KEY is required"),
+  GOOGLE_SHEETS_SPREADSHEET_ID: z.string().min(1, "GOOGLE_SHEETS_SPREADSHEET_ID is required"),
+  GOOGLE_SHEETS_SHEET_NAME: z.string().min(1).default("Registrations"),
 });
 
 const PAYFAST_CALLBACK_URL_KEYS = [
