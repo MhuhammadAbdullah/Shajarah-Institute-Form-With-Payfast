@@ -48,6 +48,10 @@ export async function POST(request: Request) {
       customerEmail: registration.email,
     });
 
+    console.log(
+      `[PayFast] Checkout fields built basketId=${registration.basketId} SUCCESS_URL=${fields.SUCCESS_URL} FAILURE_URL=${fields.FAILURE_URL} CHECKOUT_URL(PayFast's own hosted page, not our IPN)=${fields.CHECKOUT_URL} - note: this gateway's checkout API has no notify_url/IPN field; the callback destination is a merchant-account-level setting on PayFast's side, not something sent per-request.`,
+    );
+
     return apiSuccess({
       registrationId: registration.id,
       basketId: registration.basketId,
