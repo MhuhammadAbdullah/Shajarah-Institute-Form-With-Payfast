@@ -1,4 +1,4 @@
-import { Prisma } from "@prisma/client";
+import { Prisma, type Registration } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getEnv } from "@/config/env";
 import { computeValidationHash, isValidationHashValid } from "@/lib/payfast/hash";
@@ -17,10 +17,71 @@ export type IpnResult =
 
 const AMOUNT_TOLERANCE = 0.01;
 
+/**
+ * Builds the Google Sheet row for a registration and appends it, recording
+ * the outcome on the registration itself (`sheetSyncedAt` / `sheetSyncError`)
+ * so a failure is visible and retryable from the admin panel instead of
+ * silently disappearing into server logs.
+ */
+async function syncRegistrationToSheet(
+  registration: Registration,
+  paymentMethod: string | null,
+  transactionId: string | null,
+  amountPaid: number,
+  paymentDate: Date,
+): Promise<void> {
+  try {
+    await appendPaidRegistrationRow({
+      registrationId: registration.id,
+      registrationDate: registration.createdAt,
+      formSubmissionTime: registration.createdAt,
+      basketId: registration.basketId,
+      studentName: registration.studentName,
+      fatherName: registration.fatherName,
+      email: registration.email,
+      phone: registration.phone,
+      cnic: registration.cnic,
+      gender: registration.gender,
+      dateOfBirth: registration.dateOfBirth,
+      program: registration.program,
+      batch: registration.batch,
+      campus: registration.campus,
+      session: registration.session,
+      fee: Number(registration.fee),
+      paymentStatus: "PAID",
+      country: registration.country,
+      province: registration.province,
+      city: registration.city,
+      postalCode: registration.postalCode,
+      address: registration.address,
+      paymentMethod,
+      transactionId,
+      amountPaid,
+      paymentDate,
+    });
+
+    console.log(`[Sheets] Sync succeeded basketId=${registration.basketId}`);
+    await prisma.registration.update({
+      where: { id: registration.id },
+      data: { sheetSyncedAt: new Date(), sheetSyncError: null },
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[Sheets] Sync failed basketId=${registration.basketId}: ${message}`, error);
+    await prisma.registration
+      .update({ where: { id: registration.id }, data: { sheetSyncError: message } })
+      .catch((updateError) => {
+        console.error(`[Sheets] Failed to record sync error for basketId=${registration.basketId}`, updateError);
+      });
+  }
+}
+
 export async function processPayFastIpn(payload: NormalizedIpnPayload): Promise<IpnResult> {
   const env = getEnv();
+  const logPrefix = `[PayFast IPN] basketId=${payload.basketId || "?"}`;
 
   if (!payload.basketId) {
+    console.error(`${logPrefix} rejected: missing basket_id in IPN payload`);
     return { outcome: "registration_not_found" };
   }
 
@@ -29,6 +90,7 @@ export async function processPayFastIpn(payload: NormalizedIpnPayload): Promise<
   });
 
   if (!registration) {
+    console.error(`${logPrefix} rejected: no registration found for this basket_id`);
     return { outcome: "registration_not_found" };
   }
 
@@ -40,6 +102,8 @@ export async function processPayFastIpn(payload: NormalizedIpnPayload): Promise<
     receivedHash: payload.validationHash,
   });
 
+  console.log(`${logPrefix} signature verification: ${hashValid ? "valid" : "INVALID"}`);
+
   if (!hashValid) {
     const expectedHash = computeValidationHash({
       basketId: payload.basketId,
@@ -48,7 +112,7 @@ export async function processPayFastIpn(payload: NormalizedIpnPayload): Promise<
       errCode: payload.errCode,
     });
     console.error(
-      `[PayFast IPN] Validation hash mismatch basketId=${payload.basketId} errCode=${payload.errCode} expectedHash=${expectedHash} receivedHash=${payload.validationHash}`,
+      `${logPrefix} validation hash mismatch errCode=${payload.errCode} expectedHash=${expectedHash} receivedHash=${payload.validationHash}`,
     );
     await prisma.payment.create({
       data: {
@@ -73,6 +137,7 @@ export async function processPayFastIpn(payload: NormalizedIpnPayload): Promise<
   });
 
   if (alreadyProcessed || registration.paymentStatus === "PAID") {
+    console.log(`${logPrefix} duplicate IPN ignored (already marked PAID)`);
     return { outcome: "duplicate" };
   }
 
@@ -82,6 +147,10 @@ export async function processPayFastIpn(payload: NormalizedIpnPayload): Promise<
     const expectedAmount = Number(registration.fee);
     const receivedAmount = Number(payload.amount || payload.merchantAmount || "0");
     const amountMatches = Math.abs(expectedAmount - receivedAmount) <= AMOUNT_TOLERANCE;
+
+    console.log(
+      `${logPrefix} payment verification: expectedAmount=${expectedAmount} receivedAmount=${receivedAmount} matches=${amountMatches}`,
+    );
 
     if (!amountMatches) {
       await prisma.payment.create({
@@ -101,6 +170,8 @@ export async function processPayFastIpn(payload: NormalizedIpnPayload): Promise<
       });
       return { outcome: "amount_mismatch" };
     }
+
+    const paymentDate = new Date();
 
     await prisma.$transaction([
       prisma.registration.update({
@@ -128,40 +199,27 @@ export async function processPayFastIpn(payload: NormalizedIpnPayload): Promise<
       }),
     ]);
 
-    await sendPaymentConfirmationEmail({
+    console.log(`${logPrefix} database update: registration marked PAID, payment row recorded`);
+
+    sendPaymentConfirmationEmail({
       to: registration.email,
       studentName: registration.studentName,
       program: registration.program,
       basketId: registration.basketId,
       transactionId: payload.transactionId || "N/A",
       amount: expectedAmount,
-      paymentDate: new Date(),
+      paymentDate,
     }).catch((error) => {
-      console.error("Failed to send confirmation email", error);
+      console.error(`${logPrefix} failed to send confirmation email`, error);
     });
 
-    appendPaidRegistrationRow({
-      basketId: registration.basketId,
-      studentName: registration.studentName,
-      fatherName: registration.fatherName,
-      email: registration.email,
-      phone: registration.phone,
-      cnic: registration.cnic,
-      gender: registration.gender,
-      program: registration.program,
-      batch: registration.batch,
-      campus: registration.campus,
-      session: registration.session,
-      country: registration.country,
-      city: registration.city,
-      address: registration.address,
-      paymentMethod: payload.paymentName || null,
-      transactionId: payload.transactionId || null,
-      amountPaid: expectedAmount,
-      paymentDate: new Date(),
-    }).catch((error) => {
-      console.error("Failed to append registration to Google Sheet", error);
-    });
+    // A Sheets outage must never block or reverse the payment confirmation
+    // above - failures are recorded on the registration for admin retry.
+    syncRegistrationToSheet(registration, payload.paymentName || null, payload.transactionId || null, expectedAmount, paymentDate).catch(
+      (error) => {
+        console.error(`${logPrefix} unexpected error during sheet sync`, error);
+      },
+    );
 
     return { outcome: "success" };
   }
@@ -187,6 +245,8 @@ export async function processPayFastIpn(payload: NormalizedIpnPayload): Promise<
       },
     }),
   ]);
+
+  console.log(`${logPrefix} database update: registration marked FAILED (errCode=${payload.errCode})`);
 
   return { outcome: "recorded_failure" };
 }
@@ -223,6 +283,7 @@ export async function manuallyMarkRegistrationPaid(input: ManualMarkPaidInput): 
   }
 
   const amount = Number(registration.fee);
+  const paymentDate = new Date();
 
   await prisma.$transaction([
     prisma.registration.update({
@@ -260,33 +321,47 @@ export async function manuallyMarkRegistrationPaid(input: ManualMarkPaidInput): 
     basketId: registration.basketId,
     transactionId: input.transactionId,
     amount,
-    paymentDate: new Date(),
+    paymentDate,
   }).catch((error) => {
     console.error("Failed to send confirmation email", error);
   });
 
-  appendPaidRegistrationRow({
-    basketId: registration.basketId,
-    studentName: registration.studentName,
-    fatherName: registration.fatherName,
-    email: registration.email,
-    phone: registration.phone,
-    cnic: registration.cnic,
-    gender: registration.gender,
-    program: registration.program,
-    batch: registration.batch,
-    campus: registration.campus,
-    session: registration.session,
-    country: registration.country,
-    city: registration.city,
-    address: registration.address,
-    paymentMethod: "Manual (Admin Override)",
-    transactionId: input.transactionId,
-    amountPaid: amount,
-    paymentDate: new Date(),
-  }).catch((error) => {
-    console.error("Failed to append registration to Google Sheet", error);
+  syncRegistrationToSheet(registration, "Manual (Admin Override)", input.transactionId, amount, paymentDate).catch((error) => {
+    console.error("Unexpected error during sheet sync", error);
   });
+
+  return { outcome: "success" };
+}
+
+export type RetrySheetSyncResult =
+  | { outcome: "success" }
+  | { outcome: "not_paid" }
+  | { outcome: "registration_not_found" };
+
+/**
+ * Re-runs the Google Sheets append for a registration whose automated sync
+ * failed after payment was confirmed (see `sheetSyncError` on the
+ * Registration model). Never touches payment/registration status - only
+ * the sheet row.
+ */
+export async function retrySheetSync(registrationId: string): Promise<RetrySheetSyncResult> {
+  const registration = await prisma.registration.findUnique({ where: { id: registrationId } });
+
+  if (!registration) {
+    return { outcome: "registration_not_found" };
+  }
+
+  if (registration.paymentStatus !== "PAID") {
+    return { outcome: "not_paid" };
+  }
+
+  await syncRegistrationToSheet(
+    registration,
+    registration.paymentMethod,
+    registration.transactionId,
+    Number(registration.fee),
+    new Date(),
+  );
 
   return { outcome: "success" };
 }

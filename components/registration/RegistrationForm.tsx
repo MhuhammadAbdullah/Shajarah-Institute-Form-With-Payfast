@@ -163,8 +163,14 @@ export function RegistrationForm() {
               ))}
             </Select>
           </Field>
+          <Field label="Province/State" htmlFor="province" error={errors.province?.message}>
+            <Input id="province" hasError={!!errors.province} {...register("province")} />
+          </Field>
           <Field label="City" htmlFor="city" error={errors.city?.message}>
             <Input id="city" hasError={!!errors.city} {...register("city")} />
+          </Field>
+          <Field label="Postal Code" htmlFor="postalCode" optional error={errors.postalCode?.message}>
+            <Input id="postalCode" hasError={!!errors.postalCode} {...register("postalCode")} />
           </Field>
           <div className="sm:col-span-2">
             <Field label="Address" htmlFor="address" error={errors.address?.message}>

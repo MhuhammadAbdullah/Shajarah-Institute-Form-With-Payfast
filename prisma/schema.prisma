@@ -53,9 +53,11 @@ model Registration {
   fee     Decimal @db.Decimal(10, 2)
 
   // Address
-  country String
-  city    String
-  address String
+  country    String
+  province   String?
+  city       String
+  postalCode String?
+  address    String
 
   agreementAccepted Boolean @default(false)
 
@@ -64,6 +66,12 @@ model Registration {
   paymentMethod String?
   transactionId String?
   accessToken   String?
+
+  // Google Sheets sync (set after a successful IPN marks the registration
+  // PAID; failures are retried from the admin panel instead of blocking
+  // payment confirmation)
+  sheetSyncedAt DateTime?
+  sheetSyncError String?
 
   payments Payment[]
 

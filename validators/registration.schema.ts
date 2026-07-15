@@ -34,7 +34,9 @@ export const registrationSchema = z.object({
   session: z.string().trim().min(1, "Please select a session"),
 
   country: z.string().trim().min(1, "Please select a country"),
+  province: z.string().trim().min(1, "Province/State is required"),
   city: z.string().trim().min(2, "City is required"),
+  postalCode: z.string().trim().max(20).optional().or(z.literal("")),
   address: z.string().trim().min(5, "Address must be at least 5 characters").max(500),
 
   agreementAccepted: z.boolean().refine((value) => value === true, {

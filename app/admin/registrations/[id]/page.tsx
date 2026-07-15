@@ -3,6 +3,7 @@ import Link from "next/link";
 import { getRegistrationDetail } from "@/services/admin.service";
 import { Card, CardSection } from "@/components/ui/Card";
 import { MarkPaidForm } from "@/components/admin/MarkPaidForm";
+import { RetrySheetSyncButton } from "@/components/admin/RetrySheetSyncButton";
 
 export const dynamic = "force-dynamic";
 
@@ -65,7 +66,9 @@ export default async function RegistrationDetailPage({ params }: PageProps) {
       <Card>
         <CardSection title="Address">
           <Detail label="Country" value={registration.country} />
+          <Detail label="Province/State" value={registration.province ?? ""} />
           <Detail label="City" value={registration.city} />
+          <Detail label="Postal Code" value={registration.postalCode ?? ""} />
           <Detail label="Address" value={registration.address} />
         </CardSection>
       </Card>
@@ -84,6 +87,41 @@ export default async function RegistrationDetailPage({ params }: PageProps) {
           </CardSection>
         )}
       </Card>
+
+      {registration.paymentStatus === "PAID" && (
+        <Card>
+          <CardSection title="Google Sheets Sync">
+            <Detail
+              label="Status"
+              value={
+                registration.sheetSyncError
+                  ? "Failed"
+                  : registration.sheetSyncedAt
+                    ? "Synced"
+                    : "Pending"
+              }
+            />
+            <Detail
+              label="Last Synced"
+              value={
+                registration.sheetSyncedAt
+                  ? new Intl.DateTimeFormat("en-PK", { dateStyle: "medium", timeStyle: "short" }).format(
+                      registration.sheetSyncedAt,
+                    )
+                  : ""
+              }
+            />
+            {registration.sheetSyncError && (
+              <div className="sm:col-span-2">
+                <Detail label="Error" value={registration.sheetSyncError} />
+              </div>
+            )}
+            <div className="sm:col-span-2">
+              <RetrySheetSyncButton registrationId={registration.id} />
+            </div>
+          </CardSection>
+        </Card>
+      )}
 
       <Card className="overflow-x-auto p-0">
         <div className="p-6 pb-0">
