@@ -2,6 +2,7 @@ import { Prisma, type Registration } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getEnv } from "@/config/env";
 import { computeValidationHash, isValidationHashValid } from "@/lib/payfast/hash";
+import { parseIpnAmount } from "@/lib/payfast/amount";
 import { PAYFAST_ERR_CODE_SUCCESS } from "@/constants/payfast";
 import type { NormalizedIpnPayload } from "@/types/payfast";
 import { sendPaymentConfirmationEmail } from "@/services/email.service";
@@ -13,7 +14,8 @@ export type IpnResult =
   | { outcome: "recorded_failure" }
   | { outcome: "invalid_hash" }
   | { outcome: "registration_not_found" }
-  | { outcome: "amount_mismatch" };
+  | { outcome: "amount_mismatch" }
+  | { outcome: "internal_error"; message: string };
 
 const AMOUNT_TOLERANCE = 0.01;
 
@@ -77,178 +79,210 @@ async function syncRegistrationToSheet(
 }
 
 export async function processPayFastIpn(payload: NormalizedIpnPayload): Promise<IpnResult> {
-  const env = getEnv();
   const logPrefix = `[PayFast IPN] basketId=${payload.basketId || "?"}`;
 
-  if (!payload.basketId) {
-    console.error(`${logPrefix} rejected: missing basket_id in IPN payload`);
-    return { outcome: "registration_not_found" };
-  }
+  // Tracks the outcome to report if something throws *after* the DB write
+  // already committed (email, Sheets, or anything unexpected) - PayFast must
+  // still get a success response in that case, since the registration is
+  // genuinely PAID/FAILED in the database and a retry would just repeat the
+  // same work for nothing.
+  let committedOutcome: IpnResult | null = null;
 
-  const registration = await prisma.registration.findUnique({
-    where: { basketId: payload.basketId },
-  });
+  try {
+    const env = getEnv();
 
-  if (!registration) {
-    console.error(`${logPrefix} rejected: no registration found for this basket_id`);
-    return { outcome: "registration_not_found" };
-  }
+    if (!payload.basketId) {
+      console.error(`${logPrefix} rejected: missing basket_id in IPN payload`);
+      return { outcome: "registration_not_found" };
+    }
 
-  const hashValid = isValidationHashValid({
-    basketId: payload.basketId,
-    secureKey: env.PAYFAST_SECURED_KEY,
-    merchantId: env.PAYFAST_MERCHANT_ID,
-    errCode: payload.errCode,
-    receivedHash: payload.validationHash,
-  });
+    console.log(`${logPrefix} registration lookup: querying by basketId`);
+    const registration = await prisma.registration.findUnique({
+      where: { basketId: payload.basketId },
+    });
 
-  console.log(`${logPrefix} signature verification: ${hashValid ? "valid" : "INVALID"}`);
+    if (!registration) {
+      console.error(`${logPrefix} rejected: no registration found for this basket_id`);
+      return { outcome: "registration_not_found" };
+    }
+    console.log(`${logPrefix} registration lookup: found registrationId=${registration.id} currentStatus=${registration.paymentStatus}`);
 
-  if (!hashValid) {
-    const expectedHash = computeValidationHash({
+    const hashValid = isValidationHashValid({
       basketId: payload.basketId,
       secureKey: env.PAYFAST_SECURED_KEY,
       merchantId: env.PAYFAST_MERCHANT_ID,
       errCode: payload.errCode,
+      receivedHash: payload.validationHash,
     });
-    console.error(
-      `${logPrefix} validation hash mismatch errCode=${payload.errCode} expectedHash=${expectedHash} receivedHash=${payload.validationHash}`,
-    );
-    await prisma.payment.create({
-      data: {
-        registrationId: registration.id,
+
+    console.log(`${logPrefix} signature verification: ${hashValid ? "valid" : "INVALID"}`);
+
+    if (!hashValid) {
+      const expectedHash = computeValidationHash({
         basketId: payload.basketId,
-        transactionId: payload.transactionId || null,
-        amount: new Prisma.Decimal(payload.amount || "0"),
-        merchantAmount: payload.merchantAmount ? new Prisma.Decimal(payload.merchantAmount) : null,
-        errCode: payload.errCode || null,
-        errMessage: "Validation hash mismatch",
-        validationHash: payload.validationHash || null,
-        paymentName: payload.paymentName || null,
-        gatewayResponse: payload as unknown as Prisma.InputJsonValue,
-        status: "FAILED",
-      },
-    });
-    return { outcome: "invalid_hash" };
-  }
-
-  const alreadyProcessed = await prisma.payment.findFirst({
-    where: { basketId: payload.basketId, status: "SUCCESS" },
-  });
-
-  if (alreadyProcessed || registration.paymentStatus === "PAID") {
-    console.log(`${logPrefix} duplicate IPN ignored (already marked PAID)`);
-    return { outcome: "duplicate" };
-  }
-
-  const isSuccessCode = payload.errCode === PAYFAST_ERR_CODE_SUCCESS;
-
-  if (isSuccessCode) {
-    const expectedAmount = Number(registration.fee);
-    const receivedAmount = Number(payload.amount || payload.merchantAmount || "0");
-    const amountMatches = Math.abs(expectedAmount - receivedAmount) <= AMOUNT_TOLERANCE;
-
-    console.log(
-      `${logPrefix} payment verification: expectedAmount=${expectedAmount} receivedAmount=${receivedAmount} matches=${amountMatches}`,
-    );
-
-    if (!amountMatches) {
+        secureKey: env.PAYFAST_SECURED_KEY,
+        merchantId: env.PAYFAST_MERCHANT_ID,
+        errCode: payload.errCode,
+      });
+      console.error(
+        `${logPrefix} validation hash mismatch errCode=${payload.errCode} expectedHash=${expectedHash} receivedHash=${payload.validationHash}`,
+      );
       await prisma.payment.create({
         data: {
           registrationId: registration.id,
           basketId: payload.basketId,
           transactionId: payload.transactionId || null,
-          amount: new Prisma.Decimal(payload.amount || "0"),
-          merchantAmount: payload.merchantAmount ? new Prisma.Decimal(payload.merchantAmount) : null,
+          amount: parseIpnAmount(payload.amount, "0", logPrefix),
+          merchantAmount: payload.merchantAmount ? parseIpnAmount(payload.merchantAmount, "0", logPrefix) : null,
           errCode: payload.errCode || null,
-          errMessage: `Amount mismatch: expected ${expectedAmount}, received ${receivedAmount}`,
+          errMessage: "Validation hash mismatch",
           validationHash: payload.validationHash || null,
           paymentName: payload.paymentName || null,
           gatewayResponse: payload as unknown as Prisma.InputJsonValue,
           status: "FAILED",
         },
       });
-      return { outcome: "amount_mismatch" };
+      return { outcome: "invalid_hash" };
     }
 
-    const paymentDate = new Date();
+    const alreadyProcessed = await prisma.payment.findFirst({
+      where: { basketId: payload.basketId, status: "SUCCESS" },
+    });
 
+    if (alreadyProcessed || registration.paymentStatus === "PAID") {
+      console.log(`${logPrefix} duplicate IPN ignored (already marked PAID)`);
+      return { outcome: "duplicate" };
+    }
+
+    const isSuccessCode = payload.errCode === PAYFAST_ERR_CODE_SUCCESS;
+
+    if (isSuccessCode) {
+      const expectedAmount = Number(registration.fee);
+      const receivedAmount = Number((payload.amount || payload.merchantAmount || "0").replace(/,/g, ""));
+      const amountMatches = Number.isFinite(receivedAmount) && Math.abs(expectedAmount - receivedAmount) <= AMOUNT_TOLERANCE;
+
+      console.log(
+        `${logPrefix} payment verification: expectedAmount=${expectedAmount} receivedAmount=${receivedAmount} matches=${amountMatches}`,
+      );
+
+      if (!amountMatches) {
+        await prisma.payment.create({
+          data: {
+            registrationId: registration.id,
+            basketId: payload.basketId,
+            transactionId: payload.transactionId || null,
+            amount: parseIpnAmount(payload.amount, "0", logPrefix),
+            merchantAmount: payload.merchantAmount ? parseIpnAmount(payload.merchantAmount, "0", logPrefix) : null,
+            errCode: payload.errCode || null,
+            errMessage: `Amount mismatch: expected ${expectedAmount}, received ${receivedAmount}`,
+            validationHash: payload.validationHash || null,
+            paymentName: payload.paymentName || null,
+            gatewayResponse: payload as unknown as Prisma.InputJsonValue,
+            status: "FAILED",
+          },
+        });
+        return { outcome: "amount_mismatch" };
+      }
+
+      const paymentDate = new Date();
+
+      console.log(`${logPrefix} database update: starting transaction (registration -> PAID, payment row -> SUCCESS)`);
+      await prisma.$transaction([
+        prisma.registration.update({
+          where: { id: registration.id },
+          data: {
+            paymentStatus: "PAID",
+            transactionId: payload.transactionId || null,
+            paymentMethod: payload.paymentName || null,
+          },
+        }),
+        prisma.payment.create({
+          data: {
+            registrationId: registration.id,
+            basketId: payload.basketId,
+            transactionId: payload.transactionId || null,
+            amount: parseIpnAmount(payload.amount, String(expectedAmount), logPrefix),
+            merchantAmount: payload.merchantAmount ? parseIpnAmount(payload.merchantAmount, "0", logPrefix) : null,
+            errCode: payload.errCode || null,
+            errMessage: payload.errMsg || null,
+            validationHash: payload.validationHash || null,
+            paymentName: payload.paymentName || null,
+            gatewayResponse: payload as unknown as Prisma.InputJsonValue,
+            status: "SUCCESS",
+          },
+        }),
+      ]);
+      // Once this line is reached, the transaction has committed - Prisma
+      // does not roll back a $transaction after it resolves, so nothing
+      // past this point can undo the PAID status. This is recorded purely
+      // so *this function* still reports the right outcome to the caller
+      // even if something below unexpectedly throws.
+      committedOutcome = { outcome: "success" };
+      console.log(`${logPrefix} database update: committed - registration marked PAID, payment row recorded`);
+
+      sendPaymentConfirmationEmail({
+        to: registration.email,
+        studentName: registration.studentName,
+        program: registration.program,
+        basketId: registration.basketId,
+        transactionId: payload.transactionId || "N/A",
+        amount: expectedAmount,
+        paymentDate,
+      }).catch((error) => {
+        console.error(`${logPrefix} failed to send confirmation email`, error);
+      });
+
+      // A Sheets outage must never block or reverse the payment confirmation
+      // above - failures are recorded on the registration for admin retry.
+      console.log(`${logPrefix} Google Sheets update: starting (non-blocking)`);
+      syncRegistrationToSheet(registration, payload.paymentName || null, payload.transactionId || null, expectedAmount, paymentDate).catch(
+        (error) => {
+          console.error(`${logPrefix} unexpected error during sheet sync`, error);
+        },
+      );
+
+      return { outcome: "success" };
+    }
+
+    console.log(`${logPrefix} database update: starting transaction (registration -> FAILED)`);
     await prisma.$transaction([
       prisma.registration.update({
         where: { id: registration.id },
-        data: {
-          paymentStatus: "PAID",
-          transactionId: payload.transactionId || null,
-          paymentMethod: payload.paymentName || null,
-        },
+        data: { paymentStatus: "FAILED" },
       }),
       prisma.payment.create({
         data: {
           registrationId: registration.id,
           basketId: payload.basketId,
           transactionId: payload.transactionId || null,
-          amount: new Prisma.Decimal(payload.amount || expectedAmount),
-          merchantAmount: payload.merchantAmount ? new Prisma.Decimal(payload.merchantAmount) : null,
+          amount: parseIpnAmount(payload.amount, "0", logPrefix),
+          merchantAmount: payload.merchantAmount ? parseIpnAmount(payload.merchantAmount, "0", logPrefix) : null,
           errCode: payload.errCode || null,
-          errMessage: payload.errMsg || null,
+          errMessage: payload.errMsg || "Payment failed",
           validationHash: payload.validationHash || null,
           paymentName: payload.paymentName || null,
           gatewayResponse: payload as unknown as Prisma.InputJsonValue,
-          status: "SUCCESS",
+          status: "FAILED",
         },
       }),
     ]);
+    committedOutcome = { outcome: "recorded_failure" };
 
-    console.log(`${logPrefix} database update: registration marked PAID, payment row recorded`);
+    console.log(`${logPrefix} database update: committed - registration marked FAILED (errCode=${payload.errCode})`);
 
-    sendPaymentConfirmationEmail({
-      to: registration.email,
-      studentName: registration.studentName,
-      program: registration.program,
-      basketId: registration.basketId,
-      transactionId: payload.transactionId || "N/A",
-      amount: expectedAmount,
-      paymentDate,
-    }).catch((error) => {
-      console.error(`${logPrefix} failed to send confirmation email`, error);
-    });
+    return committedOutcome;
+  } catch (error) {
+    const stack = error instanceof Error ? (error.stack ?? error.message) : String(error);
+    console.error(`${logPrefix} UNCAUGHT EXCEPTION (committedOutcome=${JSON.stringify(committedOutcome)}):\n${stack}`, error);
 
-    // A Sheets outage must never block or reverse the payment confirmation
-    // above - failures are recorded on the registration for admin retry.
-    syncRegistrationToSheet(registration, payload.paymentName || null, payload.transactionId || null, expectedAmount, paymentDate).catch(
-      (error) => {
-        console.error(`${logPrefix} unexpected error during sheet sync`, error);
-      },
-    );
-
-    return { outcome: "success" };
+    // The DB write already committed - the registration genuinely is PAID
+    // (or FAILED, per the branch taken), so tell PayFast we're done. Only a
+    // failure *before* that point should make PayFast retry.
+    if (committedOutcome) {
+      return committedOutcome;
+    }
+    return { outcome: "internal_error", message: error instanceof Error ? error.message : String(error) };
   }
-
-  await prisma.$transaction([
-    prisma.registration.update({
-      where: { id: registration.id },
-      data: { paymentStatus: "FAILED" },
-    }),
-    prisma.payment.create({
-      data: {
-        registrationId: registration.id,
-        basketId: payload.basketId,
-        transactionId: payload.transactionId || null,
-        amount: new Prisma.Decimal(payload.amount || "0"),
-        merchantAmount: payload.merchantAmount ? new Prisma.Decimal(payload.merchantAmount) : null,
-        errCode: payload.errCode || null,
-        errMessage: payload.errMsg || "Payment failed",
-        validationHash: payload.validationHash || null,
-        paymentName: payload.paymentName || null,
-        gatewayResponse: payload as unknown as Prisma.InputJsonValue,
-        status: "FAILED",
-      },
-    }),
-  ]);
-
-  console.log(`${logPrefix} database update: registration marked FAILED (errCode=${payload.errCode})`);
-
-  return { outcome: "recorded_failure" };
 }
 
 export type ManualMarkPaidResult =

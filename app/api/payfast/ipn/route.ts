@@ -8,12 +8,18 @@ import { processPayFastIpn } from "@/services/payment.service";
  * plain 200 so PayFast does not retry a request we already handled.
  */
 export async function POST(request: Request) {
+  const headers = Object.fromEntries(request.headers.entries());
+  console.log(`[PayFast IPN] Request received. Headers: ${JSON.stringify(headers)}`);
+
   let rawFields: Record<string, string>;
   try {
     rawFields = await parseIpnRequestBody(request);
-  } catch {
-    return new NextResponse("Invalid IPN payload", { status: 400 });
+  } catch (error) {
+    console.error("[PayFast IPN] Failed to parse request body", error);
+    return respond("Invalid IPN payload", 400);
   }
+
+  console.log(`[PayFast IPN] Raw body fields: ${JSON.stringify(rawFields)}`);
 
   const payload = normalizeIpnPayload(rawFields);
 
@@ -22,7 +28,8 @@ export async function POST(request: Request) {
   );
 
   if (!payload.basketId || !payload.validationHash) {
-    return new NextResponse("Missing required IPN fields", { status: 400 });
+    console.error(`[PayFast IPN] Rejected: missing basket_id or validation_hash in payload`);
+    return respond("Missing required IPN fields", 400);
   }
 
   try {
@@ -33,20 +40,35 @@ export async function POST(request: Request) {
       case "success":
       case "duplicate":
       case "recorded_failure":
-        return new NextResponse("OK", { status: 200 });
+        return respond("OK", 200);
       case "registration_not_found":
-        return new NextResponse("Registration not found", { status: 404 });
+        return respond("Registration not found", 404);
       case "invalid_hash":
-        return new NextResponse("Invalid validation hash", { status: 400 });
+        return respond("Invalid validation hash", 400);
       case "amount_mismatch":
-        return new NextResponse("Amount mismatch", { status: 400 });
+        return respond("Amount mismatch", 400);
+      case "internal_error":
+        // Genuinely failed before any DB write committed (see
+        // services/payment.service.ts) - PayFast should retry this one.
+        console.error(`[PayFast IPN] Internal error before DB commit: ${result.message}`);
+        return respond("Internal error", 500);
       default:
-        return new NextResponse("OK", { status: 200 });
+        return respond("OK", 200);
     }
   } catch (error) {
-    console.error("Failed to process PayFast IPN", error);
-    return new NextResponse("Internal error", { status: 500 });
+    // processPayFastIpn already isolates its own failures into an
+    // "internal_error" outcome above; reaching this block means something
+    // threw outside that boundary (e.g. processPayFastIpn itself failed to
+    // even return). Log the full stack trace rather than a generic message.
+    const stack = error instanceof Error ? (error.stack ?? error.message) : String(error);
+    console.error(`[PayFast IPN] Unhandled exception processing basketId=${payload.basketId}:\n${stack}`, error);
+    return respond("Internal error", 500);
   }
+}
+
+function respond(body: string, status: number): NextResponse {
+  console.log(`[PayFast IPN] Response returned: status=${status} body=${body}`);
+  return new NextResponse(body, { status });
 }
 
 export function GET() {
