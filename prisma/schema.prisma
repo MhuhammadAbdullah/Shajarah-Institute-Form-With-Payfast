@@ -34,6 +34,37 @@ enum AdminRole {
   ADMIN
 }
 
+enum FormFieldType {
+  TEXT
+  TEXTAREA
+  EMAIL
+  NUMBER
+  PHONE
+  DATE
+  SELECT
+  MULTI_SELECT
+  RADIO
+  CHECKBOX
+  FILE
+}
+
+enum OptionSource {
+  STATIC
+  PROGRAMS
+  CAMPUSES
+  SESSIONS
+}
+
+enum RegistrationType {
+  SINGLE
+  MULTIPLE
+}
+
+enum DiscountType {
+  PERCENT
+  FIXED
+}
+
 model Registration {
   id       String @id @default(cuid())
   basketId String @unique
@@ -49,7 +80,6 @@ model Registration {
 
   // Program information
   program String
-  batch   String
   campus  String
   session String
   fee     Decimal @db.Decimal(10, 2)
@@ -62,6 +92,20 @@ model Registration {
   address    String
 
   agreementAccepted Boolean @default(false)
+
+  // Single vs multiple-participant registration (see Participant model) -
+  // participantCount is denormalized for cheap list/detail display without
+  // a join; the primary contact above is separate from the participants
+  // being enrolled, not counted as one of them.
+  registrationType RegistrationType @default(SINGLE)
+  participantCount Int              @default(1)
+  participants     Participant[]
+
+  // Values for admin-created dynamic fields (Educational Info, Current
+  // Studies, Professional Info, Emergency Contact, Lead Source, Additional
+  // Questions) - keyed by FormField.key. Core fields above stay as named
+  // columns deliberately; see prisma/schema.prisma history / plan notes.
+  customFieldValues Json @default("{}")
 
   // Payment
   paymentStatus PaymentStatus @default(PENDING)
@@ -83,6 +127,24 @@ model Registration {
   @@index([email])
   @@index([paymentStatus])
   @@index([createdAt])
+}
+
+model Participant {
+  id             String       @id @default(cuid())
+  registrationId String
+  registration   Registration @relation(fields: [registrationId], references: [id], onDelete: Cascade)
+
+  order    Int
+  fullName String
+  email    String
+  phone    String
+  cnic     String
+  age      Int
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([registrationId, order])
 }
 
 model Payment {
@@ -121,4 +183,226 @@ model AdminUser {
   role         AdminRole @default(ADMIN)
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
+}
+
+// Single-row app-wide settings - avoids inventing a generic key-value table
+// for what is currently just one value.
+model SiteSetting {
+  id              String   @id @default("singleton")
+  maxParticipants Int      @default(10)
+  updatedAt       DateTime @updatedAt
+}
+
+model Program {
+  id            String           @id @default(cuid())
+  name          String           @unique
+  description   String?
+  thumbnailUrl  String?
+  isActive      Boolean          @default(true)
+  displayOrder  Int              @default(0)
+  feeStructures FeeStructure[]
+  campuses      ProgramCampus[]
+  sessions      ProgramSession[]
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+
+  @@index([isActive, displayOrder])
+}
+
+model ProgramCampus {
+  id        String  @id @default(cuid())
+  programId String
+  program   Program @relation(fields: [programId], references: [id], onDelete: Cascade)
+  campusId  String
+  campus    Campus  @relation(fields: [campusId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([programId, campusId])
+}
+
+model ProgramSession {
+  id        String  @id @default(cuid())
+  programId String
+  program   Program @relation(fields: [programId], references: [id], onDelete: Cascade)
+  sessionId String
+  session   Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([programId, sessionId])
+}
+
+model Campus {
+  id            String          @id @default(cuid())
+  name          String          @unique
+  address       String?
+  isActive      Boolean         @default(true)
+  displayOrder  Int             @default(0)
+  feeStructures FeeStructure[]
+  programs      ProgramCampus[]
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+
+  @@index([isActive, displayOrder])
+}
+
+model Session {
+  id            String           @id @default(cuid())
+  name          String           @unique
+  startDate     DateTime?
+  endDate       DateTime?
+  isActive      Boolean          @default(true)
+  displayOrder  Int              @default(0)
+  feeStructures FeeStructure[]
+  programs      ProgramSession[]
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+
+  @@index([isActive, displayOrder])
+}
+
+model FeeStructure {
+  id String @id @default(cuid())
+
+  programId String
+  program   Program @relation(fields: [programId], references: [id])
+  campusId  String
+  campus    Campus  @relation(fields: [campusId], references: [id])
+  sessionId String
+  session   Session @relation(fields: [sessionId], references: [id])
+
+  currency        String   @default("PKR")
+  fee             Decimal  @db.Decimal(10, 2)
+  registrationFee Decimal? @db.Decimal(10, 2)
+  discountAmount  Decimal? @db.Decimal(10, 2)
+  discountPercent Decimal? @db.Decimal(5, 2)
+  isActive        Boolean  @default(true)
+
+  discountRules DiscountRule[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([programId, campusId, sessionId])
+}
+
+// Quantity-based bulk discount tiers for a FeeStructure - e.g. 2 registrants
+// = 10% off, 3 = 15% off. The highest minQuantity <= the selected quantity
+// wins; applies to the whole subtotal (unitFee * quantity) at that tier.
+model DiscountRule {
+  id             String       @id @default(cuid())
+  feeStructureId String
+  feeStructure   FeeStructure @relation(fields: [feeStructureId], references: [id], onDelete: Cascade)
+
+  minQuantity  Int
+  discountType DiscountType
+  value        Decimal      @db.Decimal(10, 2)
+  isActive     Boolean      @default(true)
+  displayOrder Int          @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([feeStructureId, minQuantity])
+}
+
+model FormStep {
+  id           String        @id @default(cuid())
+  key          String        @unique
+  title        String
+  description  String?
+  displayOrder Int           @default(0)
+  isActive     Boolean       @default(true)
+  sections     FormSection[]
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  @@index([isActive, displayOrder])
+}
+
+model FormSection {
+  id           String      @id @default(cuid())
+  stepId       String
+  step         FormStep    @relation(fields: [stepId], references: [id], onDelete: Cascade)
+  key          String      @unique
+  title        String
+  description  String?
+  displayOrder Int         @default(0)
+  isActive     Boolean     @default(true)
+  fields       FormField[]
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  @@index([stepId, displayOrder])
+}
+
+model FormField {
+  id        String      @id @default(cuid())
+  sectionId String
+  section   FormSection @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+
+  // Stable identifier: the customFieldValues JSON key for dynamic fields,
+  // ignored (informational only) for fields with mapsToColumn set.
+  key         String        @unique
+  label       String
+  placeholder String?
+  helpText    String?
+  type        FormFieldType
+
+  isRequired   Boolean @default(false)
+  isActive     Boolean @default(true)
+  displayOrder Int     @default(0)
+  defaultValue String?
+
+  // { minLength?, maxLength?, min?, max?, pattern?, patternMessage?,
+  //   minSelected?, maxSelected?, maxFileSizeMb?, acceptedFileTypes? }
+  validationRules Json?
+
+  // Set for SELECT/MULTI_SELECT/RADIO fields whose options are resolved
+  // live from the Program/Batch/Campus/Session CMS tables instead of the
+  // FormFieldOption rows below.
+  optionSource OptionSource?
+  options      FormFieldOption[]
+
+  // Renders a searchable combobox instead of a plain native <select> - only
+  // meaningful when type is SELECT (long option lists like Qualification).
+  isSearchable Boolean @default(false)
+
+  // Non-null for the finite set of pre-existing fields that bind to a real
+  // Registration column (e.g. "studentName", "email", "program") - only
+  // presentation is dynamic for these. Null means fully dynamic, stored in
+  // Registration.customFieldValues[key].
+  mapsToColumn String?
+
+  // Permanent once assigned for a mapsToColumn-null field - never reused,
+  // even if the field is later deactivated (see services/sheets.service.ts).
+  sheetColumnIndex Int? @unique
+
+  dependsOnFieldId String?
+  dependsOnField   FormField?  @relation("FieldDependency", fields: [dependsOnFieldId], references: [id])
+  dependsOnValue   String?
+  dependents       FormField[] @relation("FieldDependency")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([sectionId, displayOrder])
+}
+
+model FormFieldOption {
+  id      String    @id @default(cuid())
+  fieldId String
+  field   FormField @relation(fields: [fieldId], references: [id], onDelete: Cascade)
+
+  label        String
+  value        String
+  displayOrder Int     @default(0)
+  isActive     Boolean @default(true)
+
+  // If this option is selected, render one additional sibling free-text
+  // field (a FormField with dependsOnValue == this option's value).
+  triggersFreeText Boolean @default(false)
+
+  @@index([fieldId, displayOrder])
 }

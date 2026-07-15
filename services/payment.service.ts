@@ -1,4 +1,4 @@
-import { Prisma, type Registration } from "@prisma/client";
+import { Prisma, type Registration, type Participant } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getEnv } from "@/config/env";
 import { computeValidationHash, isValidationHashValid } from "@/lib/payfast/hash";
@@ -26,7 +26,7 @@ const AMOUNT_TOLERANCE = 0.01;
  * silently disappearing into server logs.
  */
 async function syncRegistrationToSheet(
-  registration: Registration,
+  registration: Registration & { participants: Participant[] },
   paymentMethod: string | null,
   transactionId: string | null,
   amountPaid: number,
@@ -46,7 +46,6 @@ async function syncRegistrationToSheet(
       gender: registration.gender,
       dateOfBirth: registration.dateOfBirth,
       program: registration.program,
-      batch: registration.batch,
       campus: registration.campus,
       session: registration.session,
       fee: Number(registration.fee),
@@ -60,6 +59,9 @@ async function syncRegistrationToSheet(
       transactionId,
       amountPaid,
       paymentDate,
+      customFieldValues: (registration.customFieldValues as Record<string, unknown>) ?? {},
+      registrationType: registration.registrationType,
+      participants: registration.participants.map((p) => ({ fullName: p.fullName, cnic: p.cnic })),
     });
 
     console.log(`[Sheets] Sync succeeded basketId=${registration.basketId}`);
@@ -99,6 +101,7 @@ export async function processPayFastIpn(payload: NormalizedIpnPayload): Promise<
     console.log(`${logPrefix} registration lookup: querying by basketId`);
     const registration = await prisma.registration.findUnique({
       where: { basketId: payload.basketId },
+      include: { participants: { orderBy: { order: "asc" } } },
     });
 
     if (!registration) {
@@ -306,7 +309,10 @@ export interface ManualMarkPaidInput {
  * Payment row, so it stays auditable and distinct from automated IPN rows.
  */
 export async function manuallyMarkRegistrationPaid(input: ManualMarkPaidInput): Promise<ManualMarkPaidResult> {
-  const registration = await prisma.registration.findUnique({ where: { id: input.registrationId } });
+  const registration = await prisma.registration.findUnique({
+    where: { id: input.registrationId },
+    include: { participants: { orderBy: { order: "asc" } } },
+  });
 
   if (!registration) {
     return { outcome: "registration_not_found" };
@@ -383,7 +389,10 @@ export type RetrySheetSyncResult =
  * updates the existing row instead of adding a duplicate.
  */
 export async function retrySheetSync(registrationId: string): Promise<RetrySheetSyncResult> {
-  const registration = await prisma.registration.findUnique({ where: { id: registrationId } });
+  const registration = await prisma.registration.findUnique({
+    where: { id: registrationId },
+    include: { participants: { orderBy: { order: "asc" } } },
+  });
 
   if (!registration) {
     return { outcome: "registration_not_found" };

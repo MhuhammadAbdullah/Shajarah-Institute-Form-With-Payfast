@@ -31,6 +31,12 @@ const envSchema = z.object({
   GOOGLE_SHEETS_PRIVATE_KEY: z.string().min(1, "GOOGLE_SHEETS_PRIVATE_KEY is required"),
   GOOGLE_SHEETS_SPREADSHEET_ID: z.string().min(1, "GOOGLE_SHEETS_SPREADSHEET_ID is required"),
   GOOGLE_SHEETS_SHEET_NAME: z.string().min(1).default("Registrations"),
+
+  // Optional: only required for the FILE field type in the Form Builder.
+  // The rest of the app functions fully without these set.
+  SUPABASE_URL: z.string().url().optional(),
+  SUPABASE_SERVICE_ROLE_KEY: z.string().min(1).optional(),
+  SUPABASE_STORAGE_BUCKET: z.string().min(1).default("registration-uploads"),
 });
 
 const PAYFAST_CALLBACK_URL_KEYS = [

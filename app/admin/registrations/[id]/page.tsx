@@ -1,11 +1,20 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
 import { getRegistrationDetail } from "@/services/admin.service";
+import { listAllCustomFieldDefinitions } from "@/services/formBuilder.service";
 import { Card, CardSection } from "@/components/ui/Card";
 import { MarkPaidForm } from "@/components/admin/MarkPaidForm";
 import { MarkRefundedForm } from "@/components/admin/MarkRefundedForm";
 import { RetrySheetSyncButton } from "@/components/admin/RetrySheetSyncButton";
+import { StatusBadge } from "@/components/ui/StatusBadge";
 import { formatCalendarDate, formatDateTime } from "@/utils/format-date";
+
+function formatCustomValue(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "boolean") return value ? "Yes" : "No";
+  if (Array.isArray(value)) return value.map((v) => String(v)).join(", ");
+  return String(value);
+}
 
 export const dynamic = "force-dynamic";
 
@@ -24,11 +33,15 @@ function Detail({ label, value }: { label: string; value: string }) {
 
 export default async function RegistrationDetailPage({ params }: PageProps) {
   const { id } = await params;
-  const registration = await getRegistrationDetail(id);
+  const [registration, customFieldDefs] = await Promise.all([getRegistrationDetail(id), listAllCustomFieldDefinitions()]);
 
   if (!registration) {
     notFound();
   }
+
+  const customFieldValues = (registration.customFieldValues as Record<string, unknown>) ?? {};
+  const knownKeys = new Set(customFieldDefs.map((f) => f.key));
+  const orphanedEntries = Object.entries(customFieldValues).filter(([key, value]) => !knownKeys.has(key) && value !== null && value !== undefined && value !== "");
 
   return (
     <div className="flex flex-col gap-6">
@@ -52,13 +65,44 @@ export default async function RegistrationDetailPage({ params }: PageProps) {
             label="Date of Birth"
             value={registration.dateOfBirth ? formatCalendarDate(registration.dateOfBirth) : ""}
           />
+          <Detail label="Registration Type" value={registration.registrationType === "MULTIPLE" ? "Multiple" : "Single"} />
         </CardSection>
       </Card>
+
+      {registration.registrationType === "MULTIPLE" && registration.participants.length > 0 && (
+        <Card className="overflow-x-auto p-0">
+          <div className="p-6 pb-0">
+            <h2 className="text-base font-semibold text-slate-900">Participants ({registration.participants.length})</h2>
+          </div>
+          <table className="mt-4 min-w-full divide-y divide-slate-200 text-sm">
+            <thead className="bg-slate-50">
+              <tr>
+                {["#", "Full Name", "Email", "Phone", "CNIC", "Age"].map((header) => (
+                  <th key={header} className="px-4 py-3 text-left font-semibold text-slate-600">
+                    {header}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {registration.participants.map((participant, index) => (
+                <tr key={participant.id}>
+                  <td className="px-4 py-3 text-slate-500">{index + 1}</td>
+                  <td className="px-4 py-3 font-medium text-slate-900">{participant.fullName}</td>
+                  <td className="px-4 py-3 text-slate-700">{participant.email}</td>
+                  <td className="px-4 py-3 text-slate-700">{participant.phone}</td>
+                  <td className="px-4 py-3 text-slate-700">{participant.cnic}</td>
+                  <td className="px-4 py-3 text-slate-700">{participant.age}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Card>
+      )}
 
       <Card>
         <CardSection title="Program Information">
           <Detail label="Program" value={registration.program} />
-          <Detail label="Batch" value={registration.batch} />
           <Detail label="Campus" value={registration.campus} />
           <Detail label="Session" value={registration.session} />
           <Detail label="Fee" value={Number(registration.fee).toLocaleString()} />
@@ -77,7 +121,12 @@ export default async function RegistrationDetailPage({ params }: PageProps) {
 
       <Card>
         <CardSection title="Payment Status">
-          <Detail label="Status" value={registration.paymentStatus} />
+          <div>
+            <p className="text-xs uppercase tracking-wide text-slate-400">Status</p>
+            <div className="mt-1">
+              <StatusBadge status={registration.paymentStatus} />
+            </div>
+          </div>
           <Detail label="Payment Method" value={registration.paymentMethod ?? ""} />
           <Detail label="Transaction ID" value={registration.transactionId ?? ""} />
         </CardSection>
@@ -122,6 +171,22 @@ export default async function RegistrationDetailPage({ params }: PageProps) {
             <div className="sm:col-span-2">
               <RetrySheetSyncButton registrationId={registration.id} />
             </div>
+          </CardSection>
+        </Card>
+      )}
+
+      {(customFieldDefs.some((f) => customFieldValues[f.key] !== undefined && customFieldValues[f.key] !== null && customFieldValues[f.key] !== "") ||
+        orphanedEntries.length > 0) && (
+        <Card>
+          <CardSection title="Additional Information" description="Fields added via the Form Builder.">
+            {customFieldDefs
+              .filter((f) => customFieldValues[f.key] !== undefined && customFieldValues[f.key] !== null && customFieldValues[f.key] !== "")
+              .map((f) => (
+                <Detail key={f.id} label={f.label + (f.isActive ? "" : " (inactive field)")} value={formatCustomValue(customFieldValues[f.key])} />
+              ))}
+            {orphanedEntries.map(([key, value]) => (
+              <Detail key={key} label={`${key} (removed field)`} value={formatCustomValue(value)} />
+            ))}
           </CardSection>
         </Card>
       )}

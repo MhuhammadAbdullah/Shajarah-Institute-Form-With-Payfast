@@ -1,6 +1,7 @@
 import type { sheets_v4 } from "googleapis";
 import { getEnv } from "@/config/env";
 import { getSheetsClient } from "@/lib/google/sheets-client";
+import { prisma } from "@/lib/prisma";
 import { PAYFAST_CURRENCY_CODE } from "@/constants/payfast";
 
 export interface PaidRegistrationRow {
@@ -16,7 +17,6 @@ export interface PaidRegistrationRow {
   gender: string;
   dateOfBirth: Date | null;
   program: string;
-  batch: string;
   campus: string;
   session: string;
   fee: number;
@@ -30,9 +30,12 @@ export interface PaidRegistrationRow {
   transactionId: string | null;
   amountPaid: number;
   paymentDate: Date;
+  customFieldValues: Record<string, unknown>;
+  registrationType: string;
+  participants: { fullName: string; cnic: string }[];
 }
 
-const HEADER_ROW = [
+const CORE_HEADER_ROW = [
   // Student Information
   "Full Name",
   "Father Name",
@@ -43,7 +46,6 @@ const HEADER_ROW = [
   "Date of Birth",
   // Program Information
   "Program Name",
-  "Batch",
   "Campus",
   "Session",
   "Course Fee",
@@ -64,13 +66,16 @@ const HEADER_ROW = [
   "Currency",
   "Amount Paid",
   "Merchant Reference",
+  // Multi-participant registrations (blank for Single)
+  "Registration Type",
+  "Participants",
 ];
 
-// 0-based index of "Registration ID" in HEADER_ROW - the key column used to
-// find an existing row so a re-sync updates it in place instead of adding a
-// duplicate. Keep in sync with HEADER_ROW / buildRowValues.
-const REGISTRATION_ID_COLUMN_INDEX = 20;
-const LAST_COLUMN_LETTER = columnLetter(HEADER_ROW.length - 1);
+// 0-based index of "Registration ID" in CORE_HEADER_ROW - the key column
+// used to find an existing row so a re-sync updates it in place instead of
+// adding a duplicate. Keep in sync with CORE_HEADER_ROW / buildCoreRowValues.
+// (Was 20 before Batch was removed from the header - recomputed to 19.)
+const REGISTRATION_ID_COLUMN_INDEX = 19;
 const KEY_COLUMN_LETTER = columnLetter(REGISTRATION_ID_COLUMN_INDEX);
 
 function columnLetter(zeroBasedIndex: number): string {
@@ -90,18 +95,48 @@ function quoteSheetName(sheetName: string): string {
   return `'${sheetName.replace(/'/g, "''")}'`;
 }
 
+/**
+ * Active custom (fully dynamic, mapsToColumn == null) fields ordered by
+ * their permanent sheetColumnIndex. Appended after CORE_HEADER_ROW - see
+ * prisma/schema.prisma FormField.sheetColumnIndex: a column slot, once
+ * assigned, is never reused even if the field is later deactivated, so
+ * reordering/removing a field never misaligns historical rows.
+ */
+async function getActiveCustomFields() {
+  return prisma.formField.findMany({
+    where: { mapsToColumn: null, isActive: true, sheetColumnIndex: { not: null } },
+    orderBy: { sheetColumnIndex: "asc" },
+  });
+}
+
+function formatCustomValue(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "boolean") return value ? "Yes" : "No";
+  if (Array.isArray(value)) return value.map((v) => String(v)).join("; ");
+  return String(value);
+}
+
 // Tracks which spreadsheet/tab pairs have already been confirmed to exist
 // (and had their header refreshed) this process lifetime, to avoid extra API
 // calls on every sync. A fresh deploy/cold start clears this, so a header
-// that drifts after a schema change still self-heals on next boot.
+// that drifts after a schema change still self-heals on next boot. Also
+// cleared explicitly by invalidateSheetHeaderCache() whenever the Form
+// Builder adds/relabels a custom field, so the header self-heals immediately
+// instead of waiting for a cold start.
 const ensuredTabs = new Set<string>();
+
+export function invalidateSheetHeaderCache(): void {
+  ensuredTabs.clear();
+}
 
 async function ensureSheetTabReady(
   sheets: sheets_v4.Sheets,
   spreadsheetId: string,
   sheetName: string,
+  headerRow: string[],
+  lastColumnLetter: string,
 ): Promise<void> {
-  const cacheKey = `${spreadsheetId}:${sheetName}`;
+  const cacheKey = `${spreadsheetId}:${sheetName}:${headerRow.length}`;
   if (ensuredTabs.has(cacheKey)) return;
 
   const spreadsheet = await sheets.spreadsheets.get({ spreadsheetId });
@@ -118,12 +153,13 @@ async function ensureSheetTabReady(
 
   // Always (re)write the header, whether the tab is brand new or pre-existed
   // from before a column schema change - this is what makes a stale header
-  // (from an earlier deploy) self-heal instead of silently staying wrong.
+  // (from an earlier deploy, or a newly added custom field) self-heal
+  // instead of silently staying wrong.
   await sheets.spreadsheets.values.update({
     spreadsheetId,
-    range: `${quoteSheetName(sheetName)}!A1:${LAST_COLUMN_LETTER}1`,
+    range: `${quoteSheetName(sheetName)}!A1:${lastColumnLetter}1`,
     valueInputOption: "RAW",
-    requestBody: { values: [HEADER_ROW] },
+    requestBody: { values: [headerRow] },
   });
 
   ensuredTabs.add(cacheKey);
@@ -154,7 +190,7 @@ function toDateOnly(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
 
-function buildRowValues(row: PaidRegistrationRow): string[] {
+function buildCoreRowValues(row: PaidRegistrationRow): string[] {
   return [
     row.studentName,
     row.fatherName ?? "",
@@ -164,7 +200,6 @@ function buildRowValues(row: PaidRegistrationRow): string[] {
     row.gender,
     row.dateOfBirth ? toDateOnly(row.dateOfBirth) : "",
     row.program,
-    row.batch,
     row.campus,
     row.session,
     row.fee.toFixed(2),
@@ -183,6 +218,8 @@ function buildRowValues(row: PaidRegistrationRow): string[] {
     PAYFAST_CURRENCY_CODE,
     row.amountPaid.toFixed(2),
     row.basketId,
+    row.registrationType,
+    row.participants.length > 0 ? row.participants.map((p) => `${p.fullName} (${p.cnic})`).join("; ") : "",
   ];
 }
 
@@ -200,6 +237,9 @@ function sleep(ms: number): Promise<void> {
  * after the first sync partially failed), otherwise appends a new row. This
  * is what keeps repeated syncs from producing duplicate rows.
  *
+ * Columns are CORE_HEADER_ROW followed by one column per currently-active
+ * custom (Form Builder) field, in their permanent sheetColumnIndex order.
+ *
  * Retries transient failures a few times before giving up - the caller
  * (services/payment.service.ts) treats a thrown error here as non-fatal to
  * the payment confirmation and records it on the registration for a manual
@@ -211,19 +251,28 @@ export async function appendPaidRegistrationRow(row: PaidRegistrationRow): Promi
   const spreadsheetId = env.GOOGLE_SHEETS_SPREADSHEET_ID;
   const sheetName = env.GOOGLE_SHEETS_SHEET_NAME;
 
+  const customFields = await getActiveCustomFields();
+  const headerRow = [...CORE_HEADER_ROW, ...customFields.map((f) => f.label)];
+  const lastColumnLetter = columnLetter(headerRow.length - 1);
+  const values = [
+    [
+      ...buildCoreRowValues(row),
+      ...customFields.map((f) => formatCustomValue(row.customFieldValues?.[f.key])),
+    ],
+  ];
+
   let lastError: unknown;
 
   for (let attempt = 1; attempt <= SYNC_MAX_ATTEMPTS; attempt++) {
     try {
-      await ensureSheetTabReady(sheets, spreadsheetId, sheetName);
+      await ensureSheetTabReady(sheets, spreadsheetId, sheetName, headerRow, lastColumnLetter);
 
       const existingRowNumber = await findExistingRowNumber(sheets, spreadsheetId, sheetName, row.registrationId);
-      const values = [buildRowValues(row)];
 
       if (existingRowNumber) {
         await sheets.spreadsheets.values.update({
           spreadsheetId,
-          range: `${quoteSheetName(sheetName)}!A${existingRowNumber}:${LAST_COLUMN_LETTER}${existingRowNumber}`,
+          range: `${quoteSheetName(sheetName)}!A${existingRowNumber}:${lastColumnLetter}${existingRowNumber}`,
           valueInputOption: "USER_ENTERED",
           requestBody: { values },
         });
@@ -231,7 +280,7 @@ export async function appendPaidRegistrationRow(row: PaidRegistrationRow): Promi
       } else {
         await sheets.spreadsheets.values.append({
           spreadsheetId,
-          range: `${quoteSheetName(sheetName)}!A:${LAST_COLUMN_LETTER}`,
+          range: `${quoteSheetName(sheetName)}!A:${lastColumnLetter}`,
           valueInputOption: "USER_ENTERED",
           insertDataOption: "INSERT_ROWS",
           requestBody: { values },

@@ -5,12 +5,14 @@ export function Field({
   htmlFor,
   error,
   optional,
+  helpText,
   children,
 }: {
   label: string;
   htmlFor: string;
   error?: string;
   optional?: boolean;
+  helpText?: string;
   children: ReactNode;
 }) {
   return (
@@ -20,7 +22,16 @@ export function Field({
         {optional && <span className="ml-1 text-slate-400 font-normal">(optional)</span>}
       </label>
       {children}
-      {error && <p className="text-sm text-red-600">{error}</p>}
+      {helpText && !error && (
+        <p id={`${htmlFor}-help`} className="text-xs text-slate-500">
+          {helpText}
+        </p>
+      )}
+      {error && (
+        <p id={`${htmlFor}-error`} role="alert" className="text-sm text-red-600">
+          {error}
+        </p>
+      )}
     </div>
   );
 }
