@@ -5,16 +5,18 @@ import { Card } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 import { Button } from "@/components/ui/Button";
+import { formatDate } from "@/utils/format-date";
 
 export const dynamic = "force-dynamic";
 
-const STATUS_OPTIONS: PaymentStatus[] = ["PENDING", "PAID", "FAILED", "CANCELLED"];
+const STATUS_OPTIONS: PaymentStatus[] = ["PENDING", "PAID", "FAILED", "CANCELLED", "REFUNDED"];
 
 const STATUS_BADGE: Record<PaymentStatus, string> = {
   PENDING: "bg-amber-100 text-amber-800",
   PAID: "bg-emerald-100 text-emerald-800",
   FAILED: "bg-red-100 text-red-800",
   CANCELLED: "bg-slate-100 text-slate-600",
+  REFUNDED: "bg-sky-100 text-sky-800",
 };
 
 interface PageProps {
@@ -93,9 +95,7 @@ export default async function AdminRegistrationsPage({ searchParams }: PageProps
                     {registration.paymentStatus}
                   </span>
                 </td>
-                <td className="px-4 py-3 text-xs text-slate-500">
-                  {new Intl.DateTimeFormat("en-PK", { dateStyle: "medium" }).format(registration.createdAt)}
-                </td>
+                <td className="px-4 py-3 text-xs text-slate-500">{formatDate(registration.createdAt)}</td>
                 <td className="px-4 py-3 text-right">
                   <Link href={`/admin/registrations/${registration.id}`} className="font-medium text-emerald-700 hover:underline">
                     View

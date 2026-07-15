@@ -2,7 +2,7 @@ import { stringify } from "csv-stringify/sync";
 import type { PaymentStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 
-const STATUS_OPTIONS: PaymentStatus[] = ["PENDING", "PAID", "FAILED", "CANCELLED"];
+const STATUS_OPTIONS: PaymentStatus[] = ["PENDING", "PAID", "FAILED", "CANCELLED", "REFUNDED"];
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);

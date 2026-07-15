@@ -342,7 +342,11 @@ export type RetrySheetSyncResult =
  * Re-runs the Google Sheets append for a registration whose automated sync
  * failed after payment was confirmed (see `sheetSyncError` on the
  * Registration model). Never touches payment/registration status - only
- * the sheet row.
+ * the sheet row. Replays the original successful Payment row's data
+ * (amount/date/method) rather than "now", so a retry doesn't drift the
+ * recorded payment date away from when the payment actually happened; the
+ * sheet-side row itself is upserted by registration ID, so re-running this
+ * updates the existing row instead of adding a duplicate.
  */
 export async function retrySheetSync(registrationId: string): Promise<RetrySheetSyncResult> {
   const registration = await prisma.registration.findUnique({ where: { id: registrationId } });
@@ -355,13 +359,79 @@ export async function retrySheetSync(registrationId: string): Promise<RetrySheet
     return { outcome: "not_paid" };
   }
 
+  const successfulPayment = await prisma.payment.findFirst({
+    where: { registrationId: registration.id, status: "SUCCESS" },
+    orderBy: { createdAt: "desc" },
+  });
+
   await syncRegistrationToSheet(
     registration,
     registration.paymentMethod,
     registration.transactionId,
-    Number(registration.fee),
-    new Date(),
+    successfulPayment ? Number(successfulPayment.amount) : Number(registration.fee),
+    successfulPayment?.createdAt ?? registration.updatedAt,
   );
+
+  return { outcome: "success" };
+}
+
+export type ManualMarkRefundedResult =
+  | { outcome: "success" }
+  | { outcome: "not_paid" }
+  | { outcome: "registration_not_found" };
+
+export interface ManualMarkRefundedInput {
+  registrationId: string;
+  note: string;
+  adminId: string;
+  adminEmail: string;
+}
+
+/**
+ * Records a refund against a previously PAID registration. Only reachable
+ * from a paid state, tied to the acting admin and a required note (same
+ * audit pattern as `manuallyMarkRegistrationPaid`). Deliberately does not
+ * touch the Google Sheets row or send an email - a refund is a business
+ * event the admin records here, not something PayFast notifies us of via
+ * this integration.
+ */
+export async function manuallyMarkRegistrationRefunded(
+  input: ManualMarkRefundedInput,
+): Promise<ManualMarkRefundedResult> {
+  const registration = await prisma.registration.findUnique({ where: { id: input.registrationId } });
+
+  if (!registration) {
+    return { outcome: "registration_not_found" };
+  }
+
+  if (registration.paymentStatus !== "PAID") {
+    return { outcome: "not_paid" };
+  }
+
+  await prisma.$transaction([
+    prisma.registration.update({
+      where: { id: registration.id },
+      data: { paymentStatus: "REFUNDED" },
+    }),
+    prisma.payment.create({
+      data: {
+        registrationId: registration.id,
+        basketId: registration.basketId,
+        transactionId: registration.transactionId,
+        amount: new Prisma.Decimal(registration.fee),
+        errCode: "000",
+        errMessage: `Marked REFUNDED by ${input.adminEmail}: ${input.note}`,
+        paymentName: "Manual Refund",
+        gatewayResponse: {
+          manual: true,
+          adminId: input.adminId,
+          adminEmail: input.adminEmail,
+          note: input.note,
+        } as unknown as Prisma.InputJsonValue,
+        status: "REFUNDED",
+      },
+    }),
+  ]);
 
   return { outcome: "success" };
 }

@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { getCurrentAdmin } from "@/lib/auth/current-admin";
-import { manuallyMarkRegistrationPaid, retrySheetSync } from "@/services/payment.service";
+import { manuallyMarkRegistrationPaid, manuallyMarkRegistrationRefunded, retrySheetSync } from "@/services/payment.service";
 
 export interface MarkPaidState {
   error?: string;
@@ -77,6 +77,48 @@ export async function retrySheetSyncAction(
   }
 
   revalidatePath(`/admin/registrations/${registrationId}`);
+
+  return { success: true };
+}
+
+export interface MarkRefundedState {
+  error?: string;
+  success?: boolean;
+}
+
+export async function markRegistrationRefundedAction(
+  _prevState: MarkRefundedState,
+  formData: FormData,
+): Promise<MarkRefundedState> {
+  const admin = await getCurrentAdmin();
+  if (!admin) {
+    return { error: "Your session has expired. Please sign in again." };
+  }
+
+  const registrationId = String(formData.get("registrationId") ?? "");
+  const note = String(formData.get("note") ?? "").trim();
+
+  if (!registrationId || !note) {
+    return { error: "A note explaining the refund is required." };
+  }
+
+  const result = await manuallyMarkRegistrationRefunded({
+    registrationId,
+    note,
+    adminId: admin.adminId,
+    adminEmail: admin.email,
+  });
+
+  if (result.outcome === "registration_not_found") {
+    return { error: "Registration not found." };
+  }
+  if (result.outcome === "not_paid") {
+    return { error: "Only a paid registration can be marked as refunded." };
+  }
+
+  revalidatePath(`/admin/registrations/${registrationId}`);
+  revalidatePath("/admin/registrations");
+  revalidatePath("/admin/dashboard");
 
   return { success: true };
 }

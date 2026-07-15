@@ -66,6 +66,24 @@ const HEADER_ROW = [
   "Merchant Reference",
 ];
 
+// 0-based index of "Registration ID" in HEADER_ROW - the key column used to
+// find an existing row so a re-sync updates it in place instead of adding a
+// duplicate. Keep in sync with HEADER_ROW / buildRowValues.
+const REGISTRATION_ID_COLUMN_INDEX = 20;
+const LAST_COLUMN_LETTER = columnLetter(HEADER_ROW.length - 1);
+const KEY_COLUMN_LETTER = columnLetter(REGISTRATION_ID_COLUMN_INDEX);
+
+function columnLetter(zeroBasedIndex: number): string {
+  let index = zeroBasedIndex + 1;
+  let letters = "";
+  while (index > 0) {
+    const remainder = (index - 1) % 26;
+    letters = String.fromCharCode(65 + remainder) + letters;
+    index = Math.floor((index - 1) / 26);
+  }
+  return letters;
+}
+
 // Sheet names containing spaces or special characters must be single-quoted
 // in A1 notation; escape any literal single quotes in the name itself.
 function quoteSheetName(sheetName: string): string {
@@ -73,10 +91,12 @@ function quoteSheetName(sheetName: string): string {
 }
 
 // Tracks which spreadsheet/tab pairs have already been confirmed to exist
-// this process lifetime, to avoid an extra API call on every append.
+// (and had their header refreshed) this process lifetime, to avoid extra API
+// calls on every sync. A fresh deploy/cold start clears this, so a header
+// that drifts after a schema change still self-heals on next boot.
 const ensuredTabs = new Set<string>();
 
-async function ensureSheetTabExists(
+async function ensureSheetTabReady(
   sheets: sheets_v4.Sheets,
   spreadsheetId: string,
   sheetName: string,
@@ -94,15 +114,40 @@ async function ensureSheetTabExists(
         requests: [{ addSheet: { properties: { title: sheetName } } }],
       },
     });
-    await sheets.spreadsheets.values.update({
-      spreadsheetId,
-      range: `${quoteSheetName(sheetName)}!A1`,
-      valueInputOption: "RAW",
-      requestBody: { values: [HEADER_ROW] },
-    });
   }
 
+  // Always (re)write the header, whether the tab is brand new or pre-existed
+  // from before a column schema change - this is what makes a stale header
+  // (from an earlier deploy) self-heal instead of silently staying wrong.
+  await sheets.spreadsheets.values.update({
+    spreadsheetId,
+    range: `${quoteSheetName(sheetName)}!A1:${LAST_COLUMN_LETTER}1`,
+    valueInputOption: "RAW",
+    requestBody: { values: [HEADER_ROW] },
+  });
+
   ensuredTabs.add(cacheKey);
+}
+
+/**
+ * Finds the 1-based sheet row number of an existing row for this
+ * registration, if any, by scanning the Registration ID column. Returns
+ * null if no such row exists yet (i.e. this is a first-time sync).
+ */
+async function findExistingRowNumber(
+  sheets: sheets_v4.Sheets,
+  spreadsheetId: string,
+  sheetName: string,
+  registrationId: string,
+): Promise<number | null> {
+  const response = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range: `${quoteSheetName(sheetName)}!${KEY_COLUMN_LETTER}2:${KEY_COLUMN_LETTER}`,
+  });
+
+  const values = response.data.values ?? [];
+  const index = values.findIndex((row) => row[0] === registrationId);
+  return index === -1 ? null : index + 2; // +1 for 1-based, +1 to skip the header row
 }
 
 function toDateOnly(date: Date): string {
@@ -141,15 +186,20 @@ function buildRowValues(row: PaidRegistrationRow): string[] {
   ];
 }
 
-const APPEND_MAX_ATTEMPTS = 3;
-const APPEND_RETRY_DELAY_MS = 500;
+const SYNC_MAX_ATTEMPTS = 3;
+const SYNC_RETRY_DELAY_MS = 500;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**
- * Appends a paid registration as a row in the configured Google Sheet.
+ * Upserts a paid registration's row in the configured Google Sheet, keyed on
+ * Registration ID: updates the existing row in place if one was already
+ * written for this registration (e.g. a duplicate IPN, or an admin retry
+ * after the first sync partially failed), otherwise appends a new row. This
+ * is what keeps repeated syncs from producing duplicate rows.
+ *
  * Retries transient failures a few times before giving up - the caller
  * (services/payment.service.ts) treats a thrown error here as non-fatal to
  * the payment confirmation and records it on the registration for a manual
@@ -158,31 +208,46 @@ function sleep(ms: number): Promise<void> {
 export async function appendPaidRegistrationRow(row: PaidRegistrationRow): Promise<void> {
   const env = getEnv();
   const sheets = getSheetsClient();
+  const spreadsheetId = env.GOOGLE_SHEETS_SPREADSHEET_ID;
+  const sheetName = env.GOOGLE_SHEETS_SHEET_NAME;
 
   let lastError: unknown;
 
-  for (let attempt = 1; attempt <= APPEND_MAX_ATTEMPTS; attempt++) {
+  for (let attempt = 1; attempt <= SYNC_MAX_ATTEMPTS; attempt++) {
     try {
-      await ensureSheetTabExists(sheets, env.GOOGLE_SHEETS_SPREADSHEET_ID, env.GOOGLE_SHEETS_SHEET_NAME);
+      await ensureSheetTabReady(sheets, spreadsheetId, sheetName);
 
-      await sheets.spreadsheets.values.append({
-        spreadsheetId: env.GOOGLE_SHEETS_SPREADSHEET_ID,
-        range: `${quoteSheetName(env.GOOGLE_SHEETS_SHEET_NAME)}!A:A`,
-        valueInputOption: "USER_ENTERED",
-        insertDataOption: "INSERT_ROWS",
-        requestBody: { values: [buildRowValues(row)] },
-      });
+      const existingRowNumber = await findExistingRowNumber(sheets, spreadsheetId, sheetName, row.registrationId);
+      const values = [buildRowValues(row)];
 
-      console.log(`[Sheets] Appended row basketId=${row.basketId} attempt=${attempt}`);
+      if (existingRowNumber) {
+        await sheets.spreadsheets.values.update({
+          spreadsheetId,
+          range: `${quoteSheetName(sheetName)}!A${existingRowNumber}:${LAST_COLUMN_LETTER}${existingRowNumber}`,
+          valueInputOption: "USER_ENTERED",
+          requestBody: { values },
+        });
+        console.log(`[Sheets] Updated existing row ${existingRowNumber} basketId=${row.basketId} attempt=${attempt}`);
+      } else {
+        await sheets.spreadsheets.values.append({
+          spreadsheetId,
+          range: `${quoteSheetName(sheetName)}!A:${LAST_COLUMN_LETTER}`,
+          valueInputOption: "USER_ENTERED",
+          insertDataOption: "INSERT_ROWS",
+          requestBody: { values },
+        });
+        console.log(`[Sheets] Appended new row basketId=${row.basketId} attempt=${attempt}`);
+      }
+
       return;
     } catch (error) {
       lastError = error;
-      console.error(`[Sheets] Append attempt ${attempt}/${APPEND_MAX_ATTEMPTS} failed basketId=${row.basketId}`, error);
-      if (attempt < APPEND_MAX_ATTEMPTS) {
-        await sleep(APPEND_RETRY_DELAY_MS * attempt);
+      console.error(`[Sheets] Sync attempt ${attempt}/${SYNC_MAX_ATTEMPTS} failed basketId=${row.basketId}`, error);
+      if (attempt < SYNC_MAX_ATTEMPTS) {
+        await sleep(SYNC_RETRY_DELAY_MS * attempt);
       }
     }
   }
 
-  throw lastError instanceof Error ? lastError : new Error("Failed to append registration to Google Sheet");
+  throw lastError instanceof Error ? lastError : new Error("Failed to sync registration to Google Sheet");
 }

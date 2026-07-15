@@ -19,12 +19,14 @@ enum PaymentStatus {
   PAID
   FAILED
   CANCELLED
+  REFUNDED
 }
 
 enum PaymentGatewayStatus {
   INITIATED
   SUCCESS
   FAILED
+  REFUNDED
 }
 
 enum AdminRole {

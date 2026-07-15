@@ -1,3 +1,5 @@
+import { formatDateTimeLong } from "@/utils/format-date";
+
 export interface PaymentConfirmationEmailData {
   studentName: string;
   program: string;
@@ -17,7 +19,7 @@ function escapeHtml(value: string): string {
 
 export function renderPaymentConfirmationEmail(data: PaymentConfirmationEmailData): { subject: string; html: string; text: string } {
   const formattedAmount = new Intl.NumberFormat("en-PK", { style: "currency", currency: "PKR" }).format(data.amount);
-  const formattedDate = new Intl.DateTimeFormat("en-PK", { dateStyle: "long", timeStyle: "short" }).format(data.paymentDate);
+  const formattedDate = formatDateTimeLong(data.paymentDate);
 
   const subject = `Payment Confirmed — Shajarah Institute (${data.basketId})`;
 

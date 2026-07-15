@@ -3,7 +3,9 @@ import Link from "next/link";
 import { getRegistrationDetail } from "@/services/admin.service";
 import { Card, CardSection } from "@/components/ui/Card";
 import { MarkPaidForm } from "@/components/admin/MarkPaidForm";
+import { MarkRefundedForm } from "@/components/admin/MarkRefundedForm";
 import { RetrySheetSyncButton } from "@/components/admin/RetrySheetSyncButton";
+import { formatCalendarDate, formatDateTime } from "@/utils/format-date";
 
 export const dynamic = "force-dynamic";
 
@@ -48,7 +50,7 @@ export default async function RegistrationDetailPage({ params }: PageProps) {
           <Detail label="Gender" value={registration.gender} />
           <Detail
             label="Date of Birth"
-            value={registration.dateOfBirth ? new Intl.DateTimeFormat("en-PK").format(registration.dateOfBirth) : ""}
+            value={registration.dateOfBirth ? formatCalendarDate(registration.dateOfBirth) : ""}
           />
         </CardSection>
       </Card>
@@ -79,10 +81,17 @@ export default async function RegistrationDetailPage({ params }: PageProps) {
           <Detail label="Payment Method" value={registration.paymentMethod ?? ""} />
           <Detail label="Transaction ID" value={registration.transactionId ?? ""} />
         </CardSection>
-        {registration.paymentStatus !== "PAID" && (
+        {registration.paymentStatus !== "PAID" && registration.paymentStatus !== "REFUNDED" && (
           <CardSection title="Manual Override">
             <div className="sm:col-span-2">
               <MarkPaidForm registrationId={registration.id} />
+            </div>
+          </CardSection>
+        )}
+        {registration.paymentStatus === "PAID" && (
+          <CardSection title="Refund">
+            <div className="sm:col-span-2">
+              <MarkRefundedForm registrationId={registration.id} />
             </div>
           </CardSection>
         )}
@@ -103,13 +112,7 @@ export default async function RegistrationDetailPage({ params }: PageProps) {
             />
             <Detail
               label="Last Synced"
-              value={
-                registration.sheetSyncedAt
-                  ? new Intl.DateTimeFormat("en-PK", { dateStyle: "medium", timeStyle: "short" }).format(
-                      registration.sheetSyncedAt,
-                    )
-                  : ""
-              }
+              value={registration.sheetSyncedAt ? formatDateTime(registration.sheetSyncedAt) : ""}
             />
             {registration.sheetSyncError && (
               <div className="sm:col-span-2">
@@ -140,9 +143,7 @@ export default async function RegistrationDetailPage({ params }: PageProps) {
           <tbody className="divide-y divide-slate-100">
             {registration.payments.map((payment) => (
               <tr key={payment.id}>
-                <td className="px-4 py-3 text-xs text-slate-500">
-                  {new Intl.DateTimeFormat("en-PK", { dateStyle: "medium", timeStyle: "short" }).format(payment.createdAt)}
-                </td>
+                <td className="px-4 py-3 text-xs text-slate-500">{formatDateTime(payment.createdAt)}</td>
                 <td className="px-4 py-3 font-mono text-xs text-slate-700">{payment.transactionId ?? "—"}</td>
                 <td className="px-4 py-3 text-slate-700">{Number(payment.amount).toLocaleString()}</td>
                 <td className="px-4 py-3 text-slate-700">{payment.errCode ?? "—"}</td>
