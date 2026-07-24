@@ -3,8 +3,8 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
   directUrl = env("DIRECT_URL")
 }
 
@@ -65,6 +65,12 @@ enum DiscountType {
   FIXED
 }
 
+enum PromotionDiscountType {
+  PERCENT
+  FIXED
+  BOGO
+}
+
 model Registration {
   id       String @id @default(cuid())
   basketId String @unique
@@ -93,6 +99,21 @@ model Registration {
 
   agreementAccepted Boolean @default(false)
 
+  // Promotion & discount breakdown - see services/promotionEngine.service.ts.
+  // `fee` above keeps its exact original meaning (the single final amount
+  // ever sent to PayFast); these are purely additive audit/display columns.
+  // originalAmount = unitFee * quantity, before any discount of either layer.
+  // bulkDiscountAmount = layer-1 DiscountRule tier discount (unchanged concept).
+  // promotionDiscountAmount = sum of all applied Promotion discounts (layer 2).
+  // fee = originalAmount - bulkDiscountAmount - promotionDiscountAmount, floored at 0.
+  originalAmount          Decimal @default(0) @db.Decimal(10, 2)
+  bulkDiscountAmount      Decimal @default(0) @db.Decimal(10, 2)
+  promotionDiscountAmount Decimal @default(0) @db.Decimal(10, 2)
+  freeRegistrationCount   Int     @default(0)
+  appliedCouponCode       String?
+
+  promotionRedemptions PromotionRedemption[]
+
   // Single vs multiple-participant registration (see Participant model) -
   // participantCount is denormalized for cheap list/detail display without
   // a join; the primary contact above is separate from the participants
@@ -116,7 +137,7 @@ model Registration {
   // Google Sheets sync (set after a successful IPN marks the registration
   // PAID; failures are retried from the admin panel instead of blocking
   // payment confirmation)
-  sheetSyncedAt DateTime?
+  sheetSyncedAt  DateTime?
   sheetSyncError String?
 
   payments Payment[]
@@ -194,17 +215,18 @@ model SiteSetting {
 }
 
 model Program {
-  id            String           @id @default(cuid())
-  name          String           @unique
-  description   String?
-  thumbnailUrl  String?
-  isActive      Boolean          @default(true)
-  displayOrder  Int              @default(0)
-  feeStructures FeeStructure[]
-  campuses      ProgramCampus[]
-  sessions      ProgramSession[]
-  createdAt     DateTime         @default(now())
-  updatedAt     DateTime         @updatedAt
+  id              String             @id @default(cuid())
+  name            String             @unique
+  description     String?
+  thumbnailUrl    String?
+  isActive        Boolean            @default(true)
+  displayOrder    Int                @default(0)
+  feeStructures   FeeStructure[]
+  campuses        ProgramCampus[]
+  sessions        ProgramSession[]
+  promotionScopes PromotionProgram[]
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
 
   @@index([isActive, displayOrder])
 }
@@ -248,16 +270,17 @@ model Campus {
 }
 
 model Session {
-  id            String           @id @default(cuid())
-  name          String           @unique
-  startDate     DateTime?
-  endDate       DateTime?
-  isActive      Boolean          @default(true)
-  displayOrder  Int              @default(0)
-  feeStructures FeeStructure[]
-  programs      ProgramSession[]
-  createdAt     DateTime         @default(now())
-  updatedAt     DateTime         @updatedAt
+  id              String             @id @default(cuid())
+  name            String             @unique
+  startDate       DateTime?
+  endDate         DateTime?
+  isActive        Boolean            @default(true)
+  displayOrder    Int                @default(0)
+  feeStructures   FeeStructure[]
+  programs        ProgramSession[]
+  promotionScopes PromotionSession[]
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
 
   @@index([isActive, displayOrder])
 }
@@ -405,4 +428,130 @@ model FormFieldOption {
   triggersFreeText Boolean @default(false)
 
   @@index([fieldId, displayOrder])
+}
+
+// ── Discount & Promotion engine ─────────────────────────────────────────────
+// A second, independent discount layer computed on top of the existing
+// FeeStructure/DiscountRule bulk-tier system (never modified/replaced) - see
+// services/promotionEngine.service.ts for the compute algorithm. Automatic
+// promotions (requiresCode=false) and coupon promotions (requiresCode=true,
+// unique `code`) share this one model; PERCENT/FIXED/BOGO can each be either.
+
+model Promotion {
+  id String @id @default(cuid())
+
+  name        String // Discount Name (internal)
+  description String? // Internal Description
+
+  requiresCode Boolean @default(false)
+  code         String? @unique // always stored UPPERCASED+trimmed
+
+  publicTitle String? // Public Promotion Title
+  subtitle    String? // Promotion Subtitle
+  bannerText  String? // Promotion Banner Text
+
+  discountType      PromotionDiscountType
+  value             Decimal?              @db.Decimal(10, 2) // PERCENT (0-100) or FIXED amount; null for BOGO
+  maxDiscountAmount Decimal?              @db.Decimal(10, 2) // cap, mainly for PERCENT
+
+  buyQuantity  Int? // BOGO only
+  freeQuantity Int? // BOGO only
+
+  // Lifecycle - status is always computed on read (derivePromotionStatus in
+  // services/promotion.service.ts), never stored, so it can never go stale.
+  isActive         Boolean   @default(false)
+  firstActivatedAt DateTime? // set once, first time isActive flips true - distinguishes Draft (null) from Disabled (set)
+  startDate        DateTime?
+  endDate          DateTime?
+
+  priority          Int     @default(0) // higher wins
+  isStackable       Boolean @default(false)
+  allowBogoStacking Boolean @default(false) // this BOGO promo may combine with another already-applied BOGO
+
+  usageLimit        Int? // total redemptions; null = unlimited
+  usageLimitPerUser Int? // per user (by email); null = unlimited
+  usageCount        Int  @default(0) // only ever incremented via an atomic conditional update
+
+  minOrderAmount       Decimal? @db.Decimal(10, 2) // compared against the fixed post-layer-1 subtotal
+  minRegistrationCount Int? // compared against quantity
+
+  showOnForm Boolean @default(true) // banner eligibility
+  isFeatured Boolean @default(false)
+
+  bannerColor  String?
+  bannerIcon   String?
+  displayOrder Int     @default(0)
+
+  programs    PromotionProgram[]
+  sessions    PromotionSession[]
+  redemptions PromotionRedemption[]
+  auditLogs   PromotionAuditLog[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([isActive, startDate, endDate])
+  @@index([requiresCode, code])
+}
+
+// Empty relation set on a Promotion = applies to ALL programs/sessions.
+model PromotionProgram {
+  id          String    @id @default(cuid())
+  promotionId String
+  promotion   Promotion @relation(fields: [promotionId], references: [id], onDelete: Cascade)
+  programId   String
+  program     Program   @relation(fields: [programId], references: [id], onDelete: Cascade)
+  createdAt   DateTime  @default(now())
+
+  @@unique([promotionId, programId])
+}
+
+model PromotionSession {
+  id          String    @id @default(cuid())
+  promotionId String
+  promotion   Promotion @relation(fields: [promotionId], references: [id], onDelete: Cascade)
+  sessionId   String
+  session     Session   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  createdAt   DateTime  @default(now())
+
+  @@unique([promotionId, sessionId])
+}
+
+// One row per (promotion, registration) - the authoritative record of what
+// applied and how much it contributed. Substrate for per-user usage checks
+// and the admin "Revenue Saved" stat. Deliberately not a scalar FK on
+// Registration, since stacking means more than one promotion can apply to a
+// single registration.
+model PromotionRedemption {
+  id             String       @id @default(cuid())
+  promotionId    String
+  promotion      Promotion    @relation(fields: [promotionId], references: [id])
+  registrationId String
+  registration   Registration @relation(fields: [registrationId], references: [id], onDelete: Cascade)
+
+  userEmail      String // denormalized from Registration.email - avoids a join for the per-user usage check
+  discountAmount Decimal @db.Decimal(10, 2) // this promotion's own contribution
+  freeCount      Int? // BOGO only
+
+  createdAt DateTime @default(now())
+
+  @@unique([promotionId, registrationId])
+  @@index([promotionId, userEmail])
+}
+
+// Admin-action audit trail (create/update/enable/disable/delete/duplicate) -
+// a separate concern from PromotionRedemption (customer usage).
+model PromotionAuditLog {
+  id          String    @id @default(cuid())
+  promotionId String
+  promotion   Promotion @relation(fields: [promotionId], references: [id], onDelete: Cascade)
+
+  action     String // "CREATED" | "UPDATED" | "ENABLED" | "DISABLED" | "DELETED" | "DUPLICATED"
+  adminId    String?
+  adminEmail String?
+  metadata   Json?
+
+  createdAt DateTime @default(now())
+
+  @@index([promotionId, createdAt])
 }

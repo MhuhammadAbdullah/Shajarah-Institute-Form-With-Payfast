@@ -101,6 +101,17 @@ export default async function RegistrationDetailPage({ params }: PageProps) {
       )}
 
       <Card>
+        <CardSection title="Pricing &amp; Discounts">
+          <Detail label="Original Amount" value={Number(registration.originalAmount).toLocaleString()} />
+          <Detail label="Bulk Discount (quantity tiers)" value={Number(registration.bulkDiscountAmount).toLocaleString()} />
+          <Detail label="Promotion Discount" value={Number(registration.promotionDiscountAmount).toLocaleString()} />
+          <Detail label="Free Registrations" value={String(registration.freeRegistrationCount)} />
+          <Detail label="Coupon Code Used" value={registration.appliedCouponCode ?? ""} />
+          <Detail label="Final Amount Payable" value={Number(registration.fee).toLocaleString()} />
+        </CardSection>
+      </Card>
+
+      <Card>
         <CardSection title="Program Information">
           <Detail label="Program" value={registration.program} />
           <Detail label="Campus" value={registration.campus} />

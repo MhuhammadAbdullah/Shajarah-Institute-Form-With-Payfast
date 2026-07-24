@@ -17,6 +17,7 @@ import { Button } from "@/components/ui/Button";
 import { PayFastRedirectForm } from "@/components/registration/PayFastRedirectForm";
 import { SuccessCheckmark } from "@/components/registration/SuccessCheckmark";
 import type { CheckoutFields } from "@/types/registration";
+import type { AppliedPromotion, CouponError } from "@/types/promotion";
 
 const DRAFT_STORAGE_KEY = "shajarah-registration-draft-v1";
 export const LAST_BASKET_ID_KEY = "shajarah-last-basket-id";
@@ -36,13 +37,22 @@ interface DynamicRegistrationFormProps {
 }
 
 export interface FeeDisplay {
+  // Layer 1 (existing quantity-tier bulk discount) - unchanged meaning.
   unitFee: number;
   quantity: number;
   subtotal: number;
   appliedRule: { minQuantity: number; discountType: "PERCENT" | "FIXED"; value: number } | null;
   discountAmount: number;
-  totalFee: number;
   currency: string;
+  // Layer 2 (Promotion engine) - additive.
+  bulkDiscountAmount: number;
+  promotionDiscountAmount: number;
+  appliedPromotions: AppliedPromotion[];
+  freeRegistrationCount: number;
+  totalDiscountAmount: number;
+  couponError: CouponError | null;
+  // Redefined: now the true final payable (both layers combined).
+  totalFee: number;
 }
 
 function isFieldVisible(field: PublicFormField, values: Record<string, unknown>): boolean {
@@ -63,6 +73,7 @@ export function DynamicRegistrationForm({ steps, cmsOptions, maxParticipants, pr
   const [programOptions, setProgramOptions] = useState<{ campuses: string[]; sessions: string[] } | null>(null);
   const [programOptionsLoading, setProgramOptionsLoading] = useState(false);
   const [feeLoading, setFeeLoading] = useState(false);
+  const [couponCode, setCouponCode] = useState<string | null>(null);
   const [showSavedBadge, setShowSavedBadge] = useState(false);
   const hasSubmittedRef = useRef(false);
 
@@ -192,6 +203,8 @@ export function DynamicRegistrationForm({ steps, cmsOptions, maxParticipants, pr
 
     const controller = new AbortController();
     const params = new URLSearchParams({ program, campus, session, quantity: String(quantity) });
+    if (couponCode) params.set("coupon", couponCode);
+    if (values.email) params.set("email", String(values.email));
 
     setFeeLoading(true);
     fetch(`/api/registration/fee-options?${params.toString()}`, { signal: controller.signal })
@@ -205,17 +218,32 @@ export function DynamicRegistrationForm({ steps, cmsOptions, maxParticipants, pr
                 subtotal: data.subtotal,
                 appliedRule: data.appliedRule,
                 discountAmount: data.discountAmount,
-                totalFee: data.totalFee,
                 currency: data.currency,
+                bulkDiscountAmount: data.bulkDiscountAmount,
+                promotionDiscountAmount: data.promotionDiscountAmount,
+                appliedPromotions: data.appliedPromotions,
+                freeRegistrationCount: data.freeRegistrationCount,
+                totalDiscountAmount: data.totalDiscountAmount,
+                couponError: data.couponError,
+                totalFee: data.totalFee,
               }
             : null,
         );
+        setFeeLoading(false);
       })
-      .catch(() => setFeeDisplay(null))
-      .finally(() => setFeeLoading(false));
+      .catch((error) => {
+        // A request superseded by a newer one (e.g. re-typing/re-applying a
+        // coupon quickly) rejects with AbortError when its controller is
+        // aborted below - that's expected and the newer request already owns
+        // feeDisplay/feeLoading, so it must NOT clear them out from under it.
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        setFeeDisplay(null);
+        setFeeLoading(false);
+      });
 
     return () => controller.abort();
-  }, [program, campus, session, quantity]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [program, campus, session, quantity, couponCode]);
 
   function handleResumeDraft() {
     const saved = window.localStorage.getItem(DRAFT_STORAGE_KEY);
@@ -308,7 +336,10 @@ export function DynamicRegistrationForm({ steps, cmsOptions, maxParticipants, pr
     // behavior drops it from `data` even though it's filled in on screen.
     // Re-attach it from the raw watched form state so the server (which
     // expects rawBody.participants for MULTIPLE registrations) sees it.
-    const payload = isMultiple ? { ...data, participants: values.participants } : data;
+    // `couponCode` is likewise not a FormField - the server recomputes and
+    // validates it independently regardless of what fee-options last showed.
+    const payload: Record<string, unknown> = isMultiple ? { ...data, participants: values.participants } : { ...data };
+    if (couponCode) payload.couponCode = couponCode;
 
     try {
       const response = await fetch("/api/register", {
@@ -421,7 +452,16 @@ export function DynamicRegistrationForm({ steps, cmsOptions, maxParticipants, pr
             className="flex flex-col gap-8"
           >
             {isReviewStep ? (
-              <ReviewSummary steps={steps} values={values} onEditStep={jumpToStep} feeDisplay={feeDisplay} />
+              <ReviewSummary
+                steps={steps}
+                values={values}
+                onEditStep={jumpToStep}
+                feeDisplay={feeDisplay}
+                couponCode={couponCode}
+                couponLoading={feeLoading}
+                onApplyCoupon={setCouponCode}
+                onRemoveCoupon={() => setCouponCode(null)}
+              />
             ) : null}
 
             {currentStep.sections.map((section) => {

@@ -161,8 +161,8 @@ interface StepSeed {
 const FORM_SEED: StepSeed[] = [
   {
     key: "student-information",
-    title: "Student Information",
-    description: "Tell us a bit about the applicant.",
+    title: "Registration Information",
+    description: "Tell us about the applicant, the program, and how to reach you.",
     sections: [
       {
         key: "student-info",
@@ -213,13 +213,6 @@ const FORM_SEED: StepSeed[] = [
           { key: "dateOfBirth", label: "Date of Birth", type: "DATE", mapsToColumn: "dateOfBirth" },
         ],
       },
-    ],
-  },
-  {
-    key: "program-and-education",
-    title: "Program & Education",
-    description: "Choose your program and tell us about your education.",
-    sections: [
       {
         key: "program-info",
         title: "Program Information",
@@ -229,52 +222,6 @@ const FORM_SEED: StepSeed[] = [
           { key: "session", label: "Session", type: "SELECT", isRequired: true, mapsToColumn: "session", optionSource: "SESSIONS" },
         ],
       },
-      {
-        key: "educational-info",
-        title: "Educational Information",
-        fields: [
-          {
-            key: "highestQualification",
-            label: "Highest Qualification",
-            type: "SELECT",
-            isSearchable: true,
-            optionSource: "STATIC",
-            options: [
-              { label: "Below Matric", value: "Below Matric" },
-              { label: "Matric", value: "Matric" },
-              { label: "Intermediate", value: "Intermediate" },
-              { label: "Diploma", value: "Diploma" },
-              { label: "Associate Degree", value: "Associate Degree" },
-              { label: "Bachelor's", value: "Bachelor's" },
-              { label: "Master's", value: "Master's" },
-              { label: "MPhil", value: "MPhil" },
-              { label: "PhD", value: "PhD" },
-            ],
-          },
-          { key: "instituteSchoolUniversity", label: "Institute / School / University", type: "TEXT" },
-          { key: "boardUniversity", label: "Board / University", type: "TEXT" },
-          { key: "passingYear", label: "Passing Year", type: "NUMBER" },
-          { key: "gradeCgpa", label: "Grade / CGPA", type: "TEXT" },
-          {
-            key: "currentEducationStatus",
-            label: "Current Education Status",
-            type: "SELECT",
-            optionSource: "STATIC",
-            options: [
-              { label: "Studying", value: "Studying" },
-              { label: "Graduated", value: "Graduated" },
-              { label: "Not Currently Studying", value: "Not Currently Studying" },
-            ],
-          },
-        ],
-      },
-    ],
-  },
-  {
-    key: "address-and-additional",
-    title: "Address & Additional Information",
-    description: "Where can we reach you, and a few more details.",
-    sections: [
       {
         key: "address",
         title: "Address",
@@ -315,69 +262,6 @@ const FORM_SEED: StepSeed[] = [
           },
           { key: "postalCode", label: "Postal Code", type: "TEXT", mapsToColumn: "postalCode" },
           { key: "address", label: "Address", type: "TEXTAREA", isRequired: true, mapsToColumn: "address" },
-        ],
-      },
-      {
-        key: "professional-info",
-        title: "Professional Information",
-        description: "Optional.",
-        fields: [
-          { key: "includeProfessionalInfo", label: "Include professional information?", type: "CHECKBOX" },
-          {
-            key: "occupation",
-            label: "Occupation",
-            type: "TEXT",
-            dependsOnKey: "includeProfessionalInfo",
-            dependsOnValue: "true",
-          },
-          {
-            key: "organization",
-            label: "Organization",
-            type: "TEXT",
-            dependsOnKey: "includeProfessionalInfo",
-            dependsOnValue: "true",
-          },
-          {
-            key: "designation",
-            label: "Designation",
-            type: "TEXT",
-            dependsOnKey: "includeProfessionalInfo",
-            dependsOnValue: "true",
-          },
-          {
-            key: "experience",
-            label: "Experience",
-            type: "TEXT",
-            dependsOnKey: "includeProfessionalInfo",
-            dependsOnValue: "true",
-          },
-        ],
-      },
-      {
-        key: "emergency-contact",
-        title: "Emergency Contact",
-        fields: [
-          { key: "emergencyContactName", label: "Contact Name", type: "TEXT", isRequired: true },
-          {
-            key: "emergencyRelationship",
-            label: "Relationship",
-            type: "SELECT",
-            isRequired: true,
-            optionSource: "STATIC",
-            options: [
-              { label: "Father", value: "Father" },
-              { label: "Mother", value: "Mother" },
-              { label: "Brother", value: "Brother" },
-              { label: "Sister", value: "Sister" },
-              { label: "Husband", value: "Husband" },
-              { label: "Wife", value: "Wife" },
-              { label: "Guardian", value: "Guardian" },
-              { label: "Friend", value: "Friend" },
-              { label: "Relative", value: "Relative" },
-              { label: "Other", value: "Other" },
-            ],
-          },
-          { key: "emergencyPhone", label: "Phone Number", type: "PHONE", isRequired: true },
         ],
       },
       {
@@ -557,6 +441,37 @@ async function seedFormDefinition() {
     await prisma.formSection.update({ where: { id: removedSection.id }, data: { isActive: false } });
     await prisma.formField.updateMany({ where: { sectionId: removedSection.id }, data: { isActive: false } });
     console.log("Deactivated legacy 'Current Studies' section and its fields.");
+  }
+
+  // Educational Information, Professional Information, and Emergency Contact
+  // were removed from the product per the requirements update (form
+  // collapsed to 2 steps: Registration Information, Review & Payment) -
+  // deactivate (never delete) each section and its fields, same convention
+  // as Current Studies above: keeps any FormField.sheetColumnIndex already
+  // assigned to them reserved so historical Sheets rows/columns stay
+  // aligned, and preserves Registration.customFieldValues on existing rows
+  // for the admin Registration Detail page (see listAllCustomFieldDefinitions
+  // in services/formBuilder.service.ts).
+  for (const sectionKey of ["educational-info", "professional-info", "emergency-contact"]) {
+    const section = await prisma.formSection.findUnique({ where: { key: sectionKey } });
+    if (section) {
+      await prisma.formSection.update({ where: { id: section.id }, data: { isActive: false } });
+      await prisma.formField.updateMany({ where: { sectionId: section.id }, data: { isActive: false } });
+      console.log(`Deactivated legacy '${sectionKey}' section and its fields.`);
+    }
+  }
+
+  // The old "Program & Education" and "Address & Additional Information"
+  // steps are superseded by the merged "student-information" step above
+  // (their surviving sections were moved into it via upsert, since section
+  // stepId is reassigned on every seed run) - deactivate the now-empty step
+  // shells rather than deleting them.
+  for (const stepKey of ["program-and-education", "address-and-additional"]) {
+    const step = await prisma.formStep.findUnique({ where: { key: stepKey } });
+    if (step) {
+      await prisma.formStep.update({ where: { id: step.id }, data: { isActive: false } });
+      console.log(`Deactivated legacy '${stepKey}' step.`);
+    }
   }
 
   // Second pass: wire up dependsOnFieldId now that every field has been

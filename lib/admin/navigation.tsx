@@ -54,6 +54,20 @@ function FeeStructuresIcon(props: SVGProps<SVGSVGElement>) {
   );
 }
 
+function PromotionsIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" {...props}>
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth={1.5}
+        d="M20.59 13.41L11 3.83A2 2 0 009.59 3.24L4 3a1 1 0 00-1 1l.24 5.59a2 2 0 00.59 1.41l9.58 9.58a2 2 0 002.82 0l4.36-4.36a2 2 0 000-2.82z"
+      />
+      <circle cx="7.5" cy="7.5" r="1.25" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
 function SettingsIcon(props: SVGProps<SVGSVGElement>) {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" {...props}>
@@ -75,5 +89,6 @@ export const ADMIN_NAV_ITEMS: AdminNavItem[] = [
   { href: "/admin/campuses", label: "Campuses", icon: CampusesIcon },
   { href: "/admin/sessions", label: "Sessions", icon: SessionsIcon },
   { href: "/admin/fee-structures", label: "Fee Structures", icon: FeeStructuresIcon },
+  { href: "/admin/promotions", label: "Promotions", icon: PromotionsIcon },
   { href: "/admin/settings", label: "Settings", icon: SettingsIcon },
 ];

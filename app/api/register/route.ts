@@ -1,7 +1,13 @@
 import { NextResponse } from "next/server";
 import { getClientIp, rateLimit } from "@/lib/rate-limit";
 import { buildCheckoutFields, getAccessToken, getCheckoutPostUrl, PayFastError } from "@/lib/payfast/client";
-import { createPendingRegistration, saveAccessToken, FeeNotConfiguredError, type CoreRegistrationFields } from "@/services/registration.service";
+import {
+  createPendingRegistration,
+  saveAccessToken,
+  FeeNotConfiguredError,
+  PromotionExhaustedError,
+  type CoreRegistrationFields,
+} from "@/services/registration.service";
 import { getPublicFormSchema } from "@/services/formBuilder.service";
 import { buildZodSchemaForFields } from "@/lib/formEngine/buildZodSchema";
 import { splitSubmission } from "@/lib/formEngine/splitSubmission";
@@ -56,6 +62,8 @@ export async function POST(request: Request) {
   const { core, custom } = splitSubmission(fields, parsed.data as Record<string, unknown>);
 
   const coreFields = core as unknown as CoreRegistrationFields;
+  const rawCouponCode = (body as Record<string, unknown>).couponCode;
+  const couponCode = typeof rawCouponCode === "string" && rawCouponCode.trim() ? rawCouponCode.trim().toUpperCase() : null;
   let participants: { fullName: string; email: string; phone: string; cnic: string; age: number }[] = [];
 
   if (coreFields.registrationType === "MULTIPLE") {
@@ -71,7 +79,7 @@ export async function POST(request: Request) {
   }
 
   try {
-    const registration = await createPendingRegistration(coreFields, custom, participants);
+    const registration = await createPendingRegistration(coreFields, custom, participants, couponCode);
 
     try {
       const token = await getAccessToken({
@@ -106,6 +114,9 @@ export async function POST(request: Request) {
   } catch (error) {
     if (error instanceof FeeNotConfiguredError) {
       return apiError(error.message, 422);
+    }
+    if (error instanceof PromotionExhaustedError) {
+      return apiError(error.message, 409);
     }
     throw error;
   }

@@ -4,6 +4,7 @@ import { listCampuses } from "@/services/campus.service";
 import { listSessions } from "@/services/session.service";
 import { getSiteSettings } from "@/services/siteSetting.service";
 import { DynamicRegistrationForm } from "@/components/registration/DynamicRegistrationForm";
+import { PromotionBanner } from "@/components/registration/PromotionBanner";
 
 export const dynamic = "force-dynamic";
 
@@ -37,6 +38,9 @@ export default async function Home() {
         </div>
       </header>
       <main className="mx-auto w-full max-w-3xl flex-1 px-6 py-10 sm:py-12 lg:max-w-4xl">
+        <div className="mb-6">
+          <PromotionBanner />
+        </div>
         <DynamicRegistrationForm steps={steps} cmsOptions={cmsOptions} maxParticipants={siteSettings.maxParticipants} />
       </main>
     </div>
